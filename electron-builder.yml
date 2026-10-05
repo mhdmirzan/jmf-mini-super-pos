@@ -1,0 +1,38 @@
+appId: com.minisuper.pos
+productName: Mini Super POS
+copyright: Copyright © 2026 Mini Super
+
+directories:
+  output: C:/Users/moham/AppData/Local/Temp/minisuper-dist
+  buildResources: build
+
+files:
+  - dist/renderer/**/*
+  - electron/**/*
+  - database/**/*
+  - sync/**/*
+  - package.json
+  - .env
+
+extraResources:
+  - from: .env
+    to: .env
+
+npmRebuild: false
+
+asar: true
+asarUnpack:
+  - "**/*.node"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Mini Super POS

@@ -1,0 +1,51 @@
+{
+  "name": "jmf-mini-super-pos",
+  "version": "1.0.0",
+  "description": "Mini Supermarket POS & Billing System",
+  "main": "electron/main/index.js",
+  "scripts": {
+    "dev:vite": "vite",
+    "dev:electron": "wait-on tcp:5173 && electron .",
+    "dev": "concurrently -k -s first \"npm run dev:vite\" \"npm run dev:electron\"",
+    "build:vite": "tsc && vite build",
+    "build:electron": "node scripts/build-electron.js",
+    "build": "npm run build:vite && npm run build:electron",
+    "test": "node --test tests/offline_pos.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mhdmirzan/jmf-mini-super-pos.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mhdmirzan/jmf-mini-super-pos/issues"
+  },
+  "homepage": "https://github.com/mhdmirzan/jmf-mini-super-pos#readme",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.0.3",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4",
+    "uuid": "^14.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/bcryptjs": "^3.0.0",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/uuid": "^11.0.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "wait-on": "^9.5.1"
+  }
+}

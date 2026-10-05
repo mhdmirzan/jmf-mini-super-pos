@@ -1,0 +1,8 @@
+name = "jmf-mini-super-pos-worker"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mini-super-pos-d1"
+database_id = "0c2688cb-d208-4b9a-9cc2-2a7ace5098b3"

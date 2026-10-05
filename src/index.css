@@ -1,0 +1,227 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #1e293b;
+  --color-primary-hover: #0f172a;
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-success: #16a34a;
+  --color-success-hover: #15803d;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+  --color-warning: #d97706;
+  --color-neutral-50: #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', 'Cascadia Code', monospace, ui-monospace;
+}
+
+:root {
+  --pos-primary: #0f172a;
+  --pos-primary-hover: #1e293b;
+  --pos-accent: #2563eb;
+  --pos-accent-hover: #1d4ed8;
+  --pos-success: #16a34a;
+  --pos-danger: #dc2626;
+  --pos-warning: #d97706;
+  --pos-bg: #f1f5f9;
+  --pos-bg-subtle: #f8fafc;
+  --pos-border: #cbd5e1;
+  --pos-text: #0f172a;
+  --pos-text-muted: #64748b;
+}
+
+/* Base styles for professional desktop retail terminal */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  font-family: var(--font-sans);
+  background-color: #f1f5f9;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.5;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f8fafc;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Focus styles */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+/* Professional retail button styles */
+button,
+[role="button"] {
+  min-height: 40px;
+  padding: 0.5rem 1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.4;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+button:active,
+[role="button"]:active {
+  transform: translateY(1px);
+}
+
+.btn-primary {
+  min-height: 44px;
+  padding: 0.6rem 1.25rem;
+  font-size: 0.875rem;
+  background-color: #1e293b;
+  color: #ffffff;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  border: 1px solid #0f172a;
+}
+
+.btn-primary:hover {
+  background-color: #0f172a;
+}
+
+.btn-accent {
+  min-height: 44px;
+  padding: 0.6rem 1.25rem;
+  font-size: 0.875rem;
+  background-color: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  border: 1px solid #1d4ed8;
+}
+
+.btn-accent:hover {
+  background-color: #1d4ed8;
+}
+
+.btn-secondary {
+  min-height: 44px;
+  padding: 0.6rem 1.25rem;
+  font-size: 0.875rem;
+  background-color: #ffffff;
+  color: #334155;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  border: 1px solid #cbd5e1;
+}
+
+.btn-secondary:hover {
+  background-color: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.btn-success {
+  min-height: 48px;
+  padding: 0.75rem 1.5rem;
+  font-size: 0.95rem;
+  background-color: #16a34a;
+  color: #ffffff;
+  font-weight: 700;
+  border-radius: 0.5rem;
+  border: 1px solid #15803d;
+}
+
+.btn-success:hover {
+  background-color: #15803d;
+}
+
+.btn-danger {
+  min-height: 44px;
+  padding: 0.6rem 1.25rem;
+  font-size: 0.875rem;
+  background-color: #dc2626;
+  color: #ffffff;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  border: 1px solid #b91c1c;
+}
+
+.btn-danger:hover {
+  background-color: #b91c1c;
+}
+
+.pos-card,
+.pos-panel {
+  background-color: #ffffff;
+  border: 1px solid var(--pos-border);
+  border-radius: 0.5rem;
+}
+
+/* 80mm Thermal Receipt Print Rules */
+@media print {
+  body {
+    background: transparent !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Hide all UI elements except printable-receipt */
+  body * {
+    visibility: hidden;
+  }
+
+  #printable-receipt,
+  #printable-receipt * {
+    visibility: visible;
+  }
+
+  #printable-receipt {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 80mm !important;
+    margin: 0 !important;
+    padding: 2mm !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: white !important;
+    color: black !important;
+    font-family: monospace !important;
+  }
+}

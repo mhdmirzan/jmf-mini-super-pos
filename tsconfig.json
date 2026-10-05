@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "rootDir": ".",
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "@electron/*": ["./electron/*"],
+      "@database/*": ["./database/*"]
+    }
+  },
+  "include": ["src/**/*", "electron/**/*", "database/**/*", "sync/**/*"],
+  "exclude": ["node_modules", "dist", "out"]
+}
