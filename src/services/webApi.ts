@@ -63,8 +63,6 @@ export async function webApiInvoke(channel: string, payload?: any): Promise<any>
       return fetchJson(`${url}/api/products/${payload.id}`);
     case 'products:search':
       return fetchJson(`${url}/api/products/search?q=${encodeURIComponent(payload.query || '')}`);
-    case 'products:getByBarcode':
-      return fetchJson(`${url}/api/products/barcode/${encodeURIComponent(payload.barcode || '')}`);
     case 'products:getByItemCode':
       return fetchJson(`${url}/api/products/code/${encodeURIComponent(payload.itemCode || '')}`);
 

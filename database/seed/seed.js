@@ -1,7 +1,7 @@
 /**
  * Database Seed Script
  * Pre-populates the SQLite database with realistic supermarket categories,
- * sub-categories, and inventory products with barcodes and prices.
+ * sub-categories, and inventory products with item codes and prices.
  */
 
 const { v4: uuidv4 } = require('uuid');
@@ -24,10 +24,10 @@ function seedDatabase(db) {
   );
   const insertProduct = db.prepare(`
     INSERT INTO products (
-      id, item_code, barcode, category_id, sub_category_id, item_name, unit,
+      id, item_code, category_id, sub_category_id, item_name, unit,
       quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price,
       is_active, created_at, updated_at, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'), 1)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'), 1)
   `);
   const insertMovement = db.prepare(`
     INSERT INTO stock_movements (
@@ -69,11 +69,10 @@ function seedDatabase(db) {
     insertSubCategory.run(subRice, catGrocery, 'Rice & Flour');
     insertSubCategory.run(subSoaps, catHousehold, 'Soaps & Detergents');
 
-    // 2. Realistic Supermarket Products
+    // 2. Realistic Supermarket Products (item_code used for scan/lookup)
     const items = [
       {
         code: 'BEV-001',
-        barcode: '4792011000012',
         cat: catBeverages,
         sub: subSoftDrinks,
         name: 'Coca Cola 500ml',
@@ -86,7 +85,6 @@ function seedDatabase(db) {
       },
       {
         code: 'BEV-002',
-        barcode: '4792011000029',
         cat: catBeverages,
         sub: subSoftDrinks,
         name: 'Sprite 500ml',
@@ -99,7 +97,6 @@ function seedDatabase(db) {
       },
       {
         code: 'BEV-003',
-        barcode: '4792011000036',
         cat: catBeverages,
         sub: subWaterJuice,
         name: 'Mineral Water 1.5L',
@@ -112,7 +109,6 @@ function seedDatabase(db) {
       },
       {
         code: 'BAK-001',
-        barcode: '4792011000043',
         cat: catBakery,
         sub: subBread,
         name: 'White Sandwich Bread 450g',
@@ -125,7 +121,6 @@ function seedDatabase(db) {
       },
       {
         code: 'BAK-002',
-        barcode: '4792011000050',
         cat: catBakery,
         sub: subBiscuits,
         name: 'Munchee Cream Cracker 200g',
@@ -138,7 +133,6 @@ function seedDatabase(db) {
       },
       {
         code: 'DAI-001',
-        barcode: '4792011000067',
         cat: catDairy,
         sub: subMilk,
         name: 'Anchor Milk Powder 400g',
@@ -151,7 +145,6 @@ function seedDatabase(db) {
       },
       {
         code: 'DAI-002',
-        barcode: '4792011000074',
         cat: catDairy,
         sub: subMilk,
         name: 'Highland Salted Butter 200g',
@@ -164,7 +157,6 @@ function seedDatabase(db) {
       },
       {
         code: 'GRO-001',
-        barcode: '4792011000081',
         cat: catGrocery,
         sub: subRice,
         name: 'Samba Premium Rice 5kg',
@@ -178,7 +170,6 @@ function seedDatabase(db) {
       },
       {
         code: 'HOU-001',
-        barcode: '4792011000098',
         cat: catHousehold,
         sub: subSoaps,
         name: 'Sunlight Lemon Bar Soap 115g',
@@ -191,7 +182,6 @@ function seedDatabase(db) {
       },
       {
         code: 'BEV-004',
-        barcode: '4792011000104',
         cat: catBeverages,
         sub: subSoftDrinks,
         name: 'Elephant House Ginger Beer 400ml',
@@ -209,7 +199,6 @@ function seedDatabase(db) {
       insertProduct.run(
         pid,
         item.code,
-        item.barcode,
         item.cat,
         item.sub,
         item.name,

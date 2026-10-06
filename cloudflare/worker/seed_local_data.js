@@ -45,7 +45,7 @@ for (const sc of subCategories) {
 // 4. Products
 const products = db.prepare('SELECT * FROM products').all();
 for (const p of products) {
-  sql += `INSERT OR REPLACE INTO products (id, item_code, barcode, category_id, sub_category_id, item_name, unit, quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price, is_active, created_at, updated_at, version) VALUES (${escapeSql(p.id)}, ${escapeSql(p.item_code)}, ${escapeSql(p.barcode)}, ${escapeSql(p.category_id)}, ${escapeSql(p.sub_category_id)}, ${escapeSql(p.item_name)}, ${escapeSql(p.unit || 'PCS')}, ${p.quantity}, ${p.minimum_quantity}, ${p.cost}, ${p.retail_price}, ${p.retail_discount}, ${escapeSql(p.wholesale_price)}, ${p.is_active}, ${escapeSql(p.created_at)}, ${escapeSql(p.updated_at)}, ${p.version});\n`;
+  sql += `INSERT OR REPLACE INTO products (id, item_code, category_id, sub_category_id, item_name, unit, quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price, is_active, created_at, updated_at, version) VALUES (${escapeSql(p.id)}, ${escapeSql(p.item_code)}, ${escapeSql(p.category_id)}, ${escapeSql(p.sub_category_id)}, ${escapeSql(p.item_name)}, ${escapeSql(p.unit || 'PCS')}, ${p.quantity}, ${p.minimum_quantity}, ${p.cost}, ${p.retail_price}, ${p.retail_discount}, ${escapeSql(p.wholesale_price)}, ${p.is_active}, ${escapeSql(p.created_at)}, ${escapeSql(p.updated_at)}, ${p.version});\n`;
 }
 
 // 5. System Settings

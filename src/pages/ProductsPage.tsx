@@ -59,7 +59,6 @@ export default function ProductsPage() {
   // Form State
   const [formData, setFormData] = useState({
     itemCode: '',
-    barcode: '',
     categoryId: '',
     subCategoryId: '',
     itemName: '',
@@ -125,7 +124,6 @@ export default function ProductsPage() {
   const openAddModal = () => {
     setFormData({
       itemCode: '',
-      barcode: '',
       categoryId: '',
       subCategoryId: '',
       itemName: '',
@@ -146,7 +144,6 @@ export default function ProductsPage() {
     setEditingProduct(product);
     setFormData({
       itemCode: product.item_code,
-      barcode: product.barcode || '',
       categoryId: product.category_id || '',
       subCategoryId: product.sub_category_id || '',
       itemName: product.item_name,
@@ -186,7 +183,6 @@ export default function ProductsPage() {
         const res = await productService.update({
           id: editingProduct.id,
           itemCode: formData.itemCode.trim().toUpperCase(),
-          barcode: formData.barcode.trim() || null,
           categoryId: formData.categoryId || null,
           subCategoryId: formData.subCategoryId || null,
           itemName: formData.itemName.trim(),
@@ -209,7 +205,6 @@ export default function ProductsPage() {
       } else {
         const res = await productService.create({
           itemCode: formData.itemCode.trim().toUpperCase(),
-          barcode: formData.barcode.trim() || undefined,
           categoryId: formData.categoryId || undefined,
           subCategoryId: formData.subCategoryId || undefined,
           itemName: formData.itemName.trim(),
@@ -225,7 +220,20 @@ export default function ProductsPage() {
 
         if (res.success) {
           showToast('Product created successfully', 'success');
-          setIsAddModalOpen(false);
+          setFormData({
+            itemCode: '',
+            categoryId: formData.categoryId,
+            subCategoryId: formData.subCategoryId,
+            itemName: '',
+            unit: formData.unit || 'PCS',
+            quantity: 0,
+            minimumQuantity: formData.minimumQuantity || 5,
+            cost: 0,
+            retailPrice: 0,
+            retailDiscount: 0,
+            wholesalePrice: 0,
+            isActive: 1,
+          });
           loadData();
         } else {
           showToast(res.error || 'Failed to create product', 'error');
@@ -357,7 +365,7 @@ export default function ProductsPage() {
           <Input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search product code, name or barcode..."
+            placeholder="Search product code or name..."
           />
         </div>
 
@@ -442,11 +450,6 @@ export default function ProductsPage() {
                   <TableRow key={p.id}>
                     <TableCell monospace className="font-semibold text-xs text-[var(--pos-text)]">
                       {p.item_code}
-                      {p.barcode && (
-                        <div className="text-[10px] text-[var(--pos-text-muted)]">
-                          {p.barcode}
-                        </div>
-                      )}
                     </TableCell>
                     <TableCell className="font-medium text-[var(--pos-text)]">
                       {p.item_name}
@@ -571,21 +574,13 @@ export default function ProductsPage() {
             <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--pos-text-muted)] mb-2 border-b border-[var(--pos-border)] pb-1">
               Product Information
             </h3>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <Input
                 label="Item Code *"
                 required
                 value={formData.itemCode}
                 onChange={(e) =>
                   setFormData({ ...formData, itemCode: e.target.value.toUpperCase() })
-                }
-                monospace
-              />
-              <Input
-                label="Barcode"
-                value={formData.barcode}
-                onChange={(e) =>
-                  setFormData({ ...formData, barcode: e.target.value })
                 }
                 monospace
               />

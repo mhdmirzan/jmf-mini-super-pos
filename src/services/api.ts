@@ -5,6 +5,46 @@ import { webApiInvoke } from './webApi';
  * Works seamlessly in both Desktop (Electron offline SQLite) and Web (Cloudflare D1).
  */
 
+function newEntityId() {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).substring(2);
+}
+
+/**
+ * Write catalog / stock changes to local SQLite (Electron) and Cloudflare D1
+ * with the same IDs so new products and stock are kept on the server.
+ */
+async function persistToServer(channel: string, payload: any) {
+  let localResult: any = null;
+  let cloudResult: any = null;
+
+  if (window.electronAPI) {
+    try {
+      localResult = await window.electronAPI.invoke(channel, payload);
+    } catch (err) {
+      console.warn(`[Persist] Local ${channel} failed:`, err);
+    }
+  }
+
+  try {
+    cloudResult = await webApiInvoke(channel, payload);
+  } catch (err) {
+    console.warn(`[Persist] Cloud ${channel} failed:`, err);
+  }
+
+  if (localResult?.success) {
+    return { ...localResult, syncedToServer: !!(cloudResult && cloudResult.success) };
+  }
+  if (cloudResult?.success) {
+    return { ...cloudResult, syncedToServer: true };
+  }
+  return {
+    success: false,
+    error: cloudResult?.error || localResult?.error || 'Failed to save data to the server',
+  };
+}
+
 const api = {
   invoke: (channel: string, ...args: any[]) => {
     if (window.electronAPI) {
@@ -42,26 +82,25 @@ export const userService = {
 
 // ─── PRODUCTS ───
 export const productService = {
-  create: (data: any) => api.invoke('products:create', data),
-  update: (data: any) => api.invoke('products:update', data),
-  delete: (id: string) => api.invoke('products:delete', { id }),
+  create: (data: any) => persistToServer('products:create', { ...data, id: data.id || newEntityId() }),
+  update: (data: any) => persistToServer('products:update', data),
+  delete: (id: string) => persistToServer('products:delete', { id }),
   list: (filters?: any) => api.invoke('products:list', filters),
   get: (id: string) => api.invoke('products:get', { id }),
   search: (query: string) => api.invoke('products:search', { query }),
-  getByBarcode: (barcode: string) => api.invoke('products:getByBarcode', { barcode }),
   getByItemCode: (itemCode: string) => api.invoke('products:getByItemCode', { itemCode }),
 };
 
 // ─── CATEGORIES ───
 export const categoryService = {
-  create: (data: any) => api.invoke('categories:create', data),
-  update: (data: any) => api.invoke('categories:update', data),
+  create: (data: any) => persistToServer('categories:create', { ...data, id: data.id || newEntityId() }),
+  update: (data: any) => persistToServer('categories:update', data),
   list: () => api.invoke('categories:list'),
 };
 
 export const subCategoryService = {
-  create: (data: any) => api.invoke('subcategories:create', data),
-  update: (data: any) => api.invoke('subcategories:update', data),
+  create: (data: any) => persistToServer('subcategories:create', { ...data, id: data.id || newEntityId() }),
+  update: (data: any) => persistToServer('subcategories:update', data),
   list: (categoryId?: string) => api.invoke('subcategories:list', { categoryId }),
 };
 
@@ -82,14 +121,30 @@ export const returnService = {
 
 // ─── STOCK ───
 export const stockService = {
-  adjust: (data: any) => api.invoke('stock:adjust', data),
+  adjust: async (data: any) => {
+    if (window.electronAPI) {
+      const local = await window.electronAPI.invoke('stock:adjust', data);
+      if (local?.success) {
+        try {
+          await webApiInvoke('stock:adjust', {
+            ...data,
+            newQuantity: local.newQuantity,
+          });
+        } catch (err) {
+          console.warn('[Persist] Cloud stock adjust failed:', err);
+        }
+        return local;
+      }
+    }
+    return webApiInvoke('stock:adjust', data);
+  },
   movements: (filters?: any) => api.invoke('stock:movements', filters),
 };
 
 // ─── SETTINGS ───
 export const settingsService = {
   get: (key?: string) => api.invoke('settings:get', { key }),
-  set: (data: any) => api.invoke('settings:set', data),
+  set: (data: any) => persistToServer('settings:set', data),
 };
 
 // ─── SYSTEM ───

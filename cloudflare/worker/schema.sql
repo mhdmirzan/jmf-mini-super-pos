@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS sub_categories (
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   item_code TEXT NOT NULL UNIQUE,
-  barcode TEXT,
   category_id TEXT,
   sub_category_id TEXT,
   item_name TEXT NOT NULL,
@@ -167,7 +166,6 @@ CREATE TABLE IF NOT EXISTS approval_requests (
 );
 
 -- Indexes for Fast Lookup & Sync
-CREATE INDEX IF NOT EXISTS idx_d1_products_barcode ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_d1_products_item_code ON products(item_code);
 CREATE INDEX IF NOT EXISTS idx_d1_invoices_invoice_number ON invoices(invoice_number);
 CREATE INDEX IF NOT EXISTS idx_d1_invoices_created_at ON invoices(created_at);

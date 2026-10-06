@@ -6,6 +6,7 @@
 const migration001 = require('./001_initial_schema');
 const migration002 = require('./002_add_unit_column');
 const migration003 = require('./003_add_approval_requests');
+const migration004 = require('./004_remove_barcode');
 
 /**
  * Run all pending migrations.
@@ -27,6 +28,7 @@ function runMigrations(db) {
     { name: '001_initial_schema', up: migration001.up },
     { name: '002_add_unit_column', up: migration002.up },
     { name: '003_add_approval_requests', up: migration003.up },
+    { name: '004_remove_barcode', up: migration004.up },
   ];
 
   const runMigration = db.transaction(() => {
@@ -42,7 +44,7 @@ function runMigrations(db) {
 
   runMigration();
 
-  // Self-heal check: ensure unit and wholesale_discount columns exist in products table regardless of migration history
+  // Self-heal check: ensure expected product columns regardless of migration history
   try {
     const pragma = db.prepare('PRAGMA table_info(products)').all();
     if (pragma.length > 0) {
@@ -54,20 +56,17 @@ function runMigrations(db) {
         db.exec("ALTER TABLE products ADD COLUMN wholesale_discount REAL NOT NULL DEFAULT 0;");
         console.log('[Migration] Self-healed: Added missing wholesale_discount column to products table');
       }
+      if (pragma.some(c => c.name === 'barcode')) {
+        db.exec('DROP INDEX IF EXISTS idx_products_barcode');
+        db.exec('ALTER TABLE products DROP COLUMN barcode');
+        console.log('[Migration] Self-healed: Dropped barcode column from products table');
+      }
     }
   } catch (err) {
     console.error('[Migration] Self-heal check error:', err);
   }
 
   console.log('[Migration] All migrations are up to date');
-
-  // Seed sample products if empty
-  try {
-    const { seedDatabase } = require('../seed/seed');
-    seedDatabase(db);
-  } catch (err) {
-    console.error('[Migration] Seed error (non-fatal):', err);
-  }
 }
 
 module.exports = { runMigrations };

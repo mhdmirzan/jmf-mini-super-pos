@@ -14,7 +14,6 @@ export interface User {
 export interface Product {
   id: string;
   item_code: string;
-  barcode: string | null;
   category_id: string | null;
   sub_category_id: string | null;
   item_name: string;
@@ -74,6 +73,7 @@ export interface Invoice {
   cash_received: number | null;
   cash_change: number | null;
   status: 'COMPLETED' | 'CANCELLED';
+  price_type?: 'RETAIL' | 'WHOLESALE';
   cancelled_by?: string;
   cancelled_at?: string;
   cancellation_reason?: string;
@@ -95,6 +95,7 @@ export interface InvoiceItem {
   unit_discount: number;
   discount: number;
   amount: number;
+  price_type?: 'RETAIL' | 'WHOLESALE';
   created_at: string;
 }
 

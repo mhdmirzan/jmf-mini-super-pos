@@ -31,7 +31,6 @@ const VALID_CHANNELS = {
     'products:list',
     'products:get',
     'products:search',
-    'products:getByBarcode',
     'products:getByItemCode',
     // Categories
     'categories:create',
@@ -61,6 +60,9 @@ const VALID_CHANNELS = {
     // System
     'system:getDeviceId',
     'system:getDbStatus',
+    // Printer
+    'printer:list',
+    'printer:printReceipt',
     // Audit
     'audit:list',
     // Reports

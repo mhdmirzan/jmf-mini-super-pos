@@ -62,10 +62,6 @@ export default {
       if (path === '/api/products/search' && method === 'GET') {
         return searchProducts(request, env);
       }
-      if (path.startsWith('/api/products/barcode/') && method === 'GET') {
-        const barcode = decodeURIComponent(path.replace('/api/products/barcode/', ''));
-        return getProductByBarcode(barcode, env);
-      }
       if (path.startsWith('/api/products/code/') && method === 'GET') {
         const code = decodeURIComponent(path.replace('/api/products/code/', ''));
         return getProductByItemCode(code, env);
@@ -354,9 +350,9 @@ async function getProducts(request, env) {
     params.push(subCategoryId);
   }
   if (search && search.trim()) {
-    conditions.push('(p.barcode LIKE ? OR p.item_code LIKE ? OR p.item_name LIKE ?)');
+    conditions.push('(p.item_code LIKE ? OR p.item_name LIKE ?)');
     const term = `%${search.trim()}%`;
-    params.push(term, term, term);
+    params.push(term, term);
   }
   if (lowStock) {
     conditions.push('p.quantity <= p.minimum_quantity');
@@ -399,28 +395,14 @@ async function searchProducts(request, env) {
     LEFT JOIN categories c ON p.category_id = c.id
     LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
     WHERE p.is_active = 1 AND (
-      p.barcode LIKE ? OR
       p.item_code LIKE ? OR
       p.item_name LIKE ?
     )
     ORDER BY p.item_name ASC
     LIMIT 50
-  `).bind(term, term, term).all();
+  `).bind(term, term).all();
 
   return jsonResponse({ success: true, products: result.results });
-}
-
-async function getProductByBarcode(barcode, env) {
-  const product = await env.DB.prepare(`
-    SELECT p.*, c.name as category_name, sc.name as sub_category_name
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.id
-    LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-    WHERE p.barcode = ? AND p.is_active = 1
-  `).bind(barcode).first();
-
-  if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
-  return jsonResponse({ success: true, product });
 }
 
 async function getProductByItemCode(code, env) {
@@ -438,20 +420,44 @@ async function getProductByItemCode(code, env) {
 
 async function createProduct(request, env) {
   const data = await request.json();
-  const id = crypto.randomUUID();
+  const id = data.id || crypto.randomUUID();
   const unit = String(data.unit || 'PCS').toUpperCase() === 'KG' ? 'KG' : 'PCS';
+  const qty = Number(data.quantity) || 0;
+  const createdBy = data.createdBy || 'WEB';
+  const existing = await env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(id).first();
 
   await env.DB.prepare(`
     INSERT INTO products (
-      id, item_code, barcode, category_id, sub_category_id, item_name,
+      id, item_code, category_id, sub_category_id, item_name,
       unit, quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price,
       is_active, created_at, updated_at, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'), 1)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'), 1)
+    ON CONFLICT(id) DO UPDATE SET
+      item_code = excluded.item_code,
+      category_id = excluded.category_id,
+      sub_category_id = excluded.sub_category_id,
+      item_name = excluded.item_name,
+      unit = excluded.unit,
+      quantity = excluded.quantity,
+      minimum_quantity = excluded.minimum_quantity,
+      cost = excluded.cost,
+      retail_price = excluded.retail_price,
+      retail_discount = excluded.retail_discount,
+      wholesale_price = excluded.wholesale_price,
+      updated_at = datetime('now'),
+      version = products.version + 1
   `).bind(
-    id, data.itemCode, data.barcode || null, data.categoryId || null, data.subCategoryId || null,
-    data.itemName, unit, data.quantity || 0, data.minimumQuantity || 0, data.cost || 0,
+    id, data.itemCode, data.categoryId || null, data.subCategoryId || null,
+    data.itemName, unit, qty, data.minimumQuantity || 0, data.cost || 0,
     data.retailPrice || 0, data.retailDiscount || 0, data.wholesalePrice || 0
   ).run();
+
+  if (qty > 0 && !existing) {
+    await env.DB.prepare(`
+      INSERT INTO stock_movements (id, product_id, movement_type, quantity, reference_type, reference_id, reason, created_by, created_at)
+      VALUES (?, ?, 'PURCHASE', ?, 'PRODUCT_CREATION', ?, 'Initial stock', ?, datetime('now'))
+    `).bind(crypto.randomUUID(), id, qty, id, createdBy).run();
+  }
 
   return jsonResponse({ success: true, id });
 }
@@ -501,14 +507,24 @@ async function deleteProduct(id, env) {
 
 // ─── CATEGORIES & SUBCATEGORIES ───
 async function getCategories(env) {
-  const result = await env.DB.prepare('SELECT * FROM categories ORDER BY name ASC').all();
-  return jsonResponse({ success: true, categories: result.results });
+  const cats = await env.DB.prepare('SELECT * FROM categories ORDER BY name ASC').all();
+  const subs = await env.DB.prepare('SELECT * FROM sub_categories ORDER BY name ASC').all();
+  const byCat = {};
+  for (const sub of (subs.results || [])) {
+    if (!byCat[sub.category_id]) byCat[sub.category_id] = [];
+    byCat[sub.category_id].push(sub);
+  }
+  const categories = (cats.results || []).map((c) => ({
+    ...c,
+    sub_categories: byCat[c.id] || [],
+  }));
+  return jsonResponse({ success: true, categories });
 }
 
 async function createCategory(request, env) {
-  const { name } = await request.json();
-  const id = crypto.randomUUID();
-  await env.DB.prepare('INSERT INTO categories (id, name) VALUES (?, ?)').bind(id, name).run();
+  const { id: providedId, name } = await request.json();
+  const id = providedId || crypto.randomUUID();
+  await env.DB.prepare('INSERT OR IGNORE INTO categories (id, name) VALUES (?, ?)').bind(id, name).run();
   return jsonResponse({ success: true, id });
 }
 
@@ -535,9 +551,9 @@ async function getSubCategories(request, env) {
 }
 
 async function createSubCategory(request, env) {
-  const { categoryId, name } = await request.json();
-  const id = crypto.randomUUID();
-  await env.DB.prepare('INSERT INTO sub_categories (id, category_id, name) VALUES (?, ?, ?)').bind(id, categoryId, name).run();
+  const { id: providedId, categoryId, name } = await request.json();
+  const id = providedId || crypto.randomUUID();
+  await env.DB.prepare('INSERT OR IGNORE INTO sub_categories (id, category_id, name) VALUES (?, ?, ?)').bind(id, categoryId, name).run();
   return jsonResponse({ success: true, id });
 }
 
@@ -795,13 +811,21 @@ async function createReturn(request, env) {
 
 // ─── STOCK HANDLERS ───
 async function adjustStock(request, env) {
-  const { productId, newQuantity, reason, adjustedBy } = await request.json();
+  const { productId, newQuantity, quantity, reason, adjustedBy } = await request.json();
   const product = await env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(productId).first();
   if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
 
-  const diff = Number(newQuantity) - product.quantity;
+  const targetQty = (newQuantity !== undefined && newQuantity !== null && newQuantity !== '')
+    ? Number(newQuantity)
+    : product.quantity + Number(quantity || 0);
+
+  if (Number.isNaN(targetQty) || targetQty < 0) {
+    return jsonResponse({ success: false, error: 'Stock cannot be negative.' }, 400);
+  }
+
+  const diff = targetQty - product.quantity;
   const statements = [
-    env.DB.prepare("UPDATE products SET quantity = ?, updated_at = datetime('now') WHERE id = ?").bind(newQuantity, productId),
+    env.DB.prepare("UPDATE products SET quantity = ?, updated_at = datetime('now') WHERE id = ?").bind(targetQty, productId),
     env.DB.prepare(`
       INSERT INTO stock_movements (id, product_id, movement_type, quantity, reference_type, reference_id, reason, created_by, created_at)
       VALUES (?, ?, 'ADJUSTMENT', ?, 'MANUAL', ?, ?, ?, datetime('now'))
@@ -809,7 +833,7 @@ async function adjustStock(request, env) {
   ];
 
   await env.DB.batch(statements);
-  return jsonResponse({ success: true });
+  return jsonResponse({ success: true, newQuantity: targetQty });
 }
 
 async function getStockMovements(request, env) {
@@ -1068,6 +1092,61 @@ async function handleSync(request, env) {
           `).bind(
             movement.id, movement.product_id, movement.movement_type, movement.quantity,
             movement.reference_type, movement.reference_id, movement.reason, movement.created_by, movement.created_at
+          )
+        );
+        if (movement.product_id) {
+          if (movement.absoluteQuantity != null) {
+            statements.push(
+              env.DB.prepare(
+                "UPDATE products SET quantity = ?, updated_at = datetime('now') WHERE id = ?"
+              ).bind(Number(movement.absoluteQuantity), movement.product_id)
+            );
+          } else if (movement.quantity != null) {
+            statements.push(
+              env.DB.prepare(
+                "UPDATE products SET quantity = quantity + ?, updated_at = datetime('now') WHERE id = ?"
+              ).bind(movement.quantity, movement.product_id)
+            );
+          }
+        }
+      }
+      processedCount++;
+    }
+
+    // D. SYNC PRODUCT CATALOG
+    if (entityType === 'PRODUCT' && data) {
+      const p = data.product || data;
+      if (p && p.id) {
+        statements.push(
+          env.DB.prepare(`
+            INSERT INTO products (
+              id, item_code, category_id, sub_category_id, item_name, unit,
+              quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price,
+              is_active, created_at, updated_at, version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              item_code = excluded.item_code,
+              category_id = excluded.category_id,
+              sub_category_id = excluded.sub_category_id,
+              item_name = excluded.item_name,
+              unit = excluded.unit,
+              quantity = excluded.quantity,
+              minimum_quantity = excluded.minimum_quantity,
+              cost = excluded.cost,
+              retail_price = excluded.retail_price,
+              retail_discount = excluded.retail_discount,
+              wholesale_price = excluded.wholesale_price,
+              is_active = excluded.is_active,
+              updated_at = excluded.updated_at,
+              version = excluded.version
+          `).bind(
+            p.id, p.item_code, p.category_id || null, p.sub_category_id || null,
+            p.item_name, p.unit || 'PCS', p.quantity || 0, p.minimum_quantity || 0, p.cost || 0,
+            p.retail_price || 0, p.retail_discount || 0, p.wholesale_price || 0,
+            p.is_active != null ? p.is_active : 1,
+            p.created_at || new Date().toISOString(),
+            p.updated_at || new Date().toISOString(),
+            p.version || 1
           )
         );
       }

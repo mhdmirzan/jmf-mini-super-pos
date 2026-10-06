@@ -145,14 +145,6 @@ function registerIpcHandlers(ipcMain, syncService = null) {
     }
   });
 
-  ipcMain.handle('products:getByBarcode', async (_event, { barcode }) => {
-    try {
-      return products.getByBarcode(barcode);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
   ipcMain.handle('products:getByItemCode', async (_event, { itemCode }) => {
     try {
       return products.getByItemCode(itemCode);
@@ -213,7 +205,13 @@ function registerIpcHandlers(ipcMain, syncService = null) {
   // ─── INVOICES ───
   ipcMain.handle('invoices:create', async (_event, data) => {
     try {
-      return invoices.create(data);
+      const result = invoices.create(data);
+      if (result.success && syncService) {
+        syncService.runSyncCycle().catch((err) => {
+          console.warn('[IPC] invoice sync trigger:', err?.message || err);
+        });
+      }
+      return result;
     } catch (error) {
       console.error('[IPC] invoices:create error:', error);
       return { success: false, error: error.message };
@@ -273,7 +271,11 @@ function registerIpcHandlers(ipcMain, syncService = null) {
   // ─── STOCK ───
   ipcMain.handle('stock:adjust', async (_event, data) => {
     try {
-      return stock.adjust(data);
+      const result = stock.adjust(data);
+      if (result.success && syncService) {
+        syncService.runSyncCycle().catch(() => {});
+      }
+      return result;
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -455,6 +457,108 @@ function registerIpcHandlers(ipcMain, syncService = null) {
       return approvals.verifyAdmin(credentials);
     } catch (error) {
       console.error('[IPC] approval:verifyAdmin error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('printer:list', async (event) => {
+    try {
+      const printers = await event.sender.getPrintersAsync();
+      return { success: true, printers: printers || [] };
+    } catch (error) {
+      return { success: false, error: error.message, printers: [] };
+    }
+  });
+
+  ipcMain.handle('printer:printReceipt', async (event, { html } = {}) => {
+    try {
+      const printers = await event.sender.getPrintersAsync();
+      const connected = (printers || []).filter((p) => p && p.name);
+      if (connected.length === 0) {
+        return { success: false, error: 'No printer is connected' };
+      }
+
+      const thermalMatch = connected.find((p) => {
+        const n = `${p.name} ${p.displayName || ''} ${p.description || ''}`.toLowerCase();
+        return /pos|thermal|receipt|80mm|xp-|epson|star |citizen|bixolon|xprinter|rongta/.test(n);
+      });
+      const deviceName = (thermalMatch || connected.find((p) => p.isDefault) || connected[0]).name;
+
+      const printHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Receipt</title>
+  <style>
+    @page { size: 80mm auto; margin: 0; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 80mm;
+      background: #fff;
+      color: #000;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 12px;
+      line-height: 1.25;
+    }
+    #printable-receipt { width: 72mm; margin: 0 auto; padding: 2mm; }
+  </style>
+</head>
+<body>
+  <div id="printable-receipt">${html || ''}</div>
+</body>
+</html>`;
+
+      const { BrowserWindow } = require('electron');
+      const printWin = new BrowserWindow({
+        show: false,
+        width: 302,
+        height: 900,
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      });
+
+      await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(printHtml));
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const printed = await new Promise((resolve) => {
+        printWin.webContents.print(
+          {
+            silent: true,
+            printBackground: false,
+            deviceName,
+            margins: { marginType: 'none' },
+            pagesPerSheet: 1,
+            copies: 1,
+            pageSize: {
+              width: 80000,
+              height: 297000,
+            },
+          },
+          (success, failureReason) => {
+            resolve({ success: !!success, error: failureReason || null });
+          }
+        );
+      });
+
+      try {
+        if (!printWin.isDestroyed()) printWin.close();
+      } catch {
+        // ignore
+      }
+
+      if (!printed.success) {
+        return {
+          success: false,
+          error: printed.error || 'Printer did not accept the job',
+        };
+      }
+      return { success: true, printer: deviceName };
+    } catch (error) {
+      console.error('[IPC] printer:printReceipt error:', error);
       return { success: false, error: error.message };
     }
   });

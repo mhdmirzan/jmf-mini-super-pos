@@ -49,7 +49,6 @@ function up(db) {
     CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,
       item_code TEXT NOT NULL UNIQUE,
-      barcode TEXT,
       category_id TEXT,
       sub_category_id TEXT,
       item_name TEXT NOT NULL,
@@ -222,7 +221,6 @@ function up(db) {
 
   // ─── INDEXES ───
   db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
     CREATE INDEX IF NOT EXISTS idx_products_item_code ON products(item_code);
     CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
     CREATE INDEX IF NOT EXISTS idx_products_is_active ON products(is_active);

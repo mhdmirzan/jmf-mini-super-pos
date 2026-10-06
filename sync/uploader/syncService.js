@@ -100,11 +100,11 @@ class SyncUploaderService {
         if (prodJson.success && Array.isArray(prodList) && prodList.length > 0) {
           const upsertProd = this.db.prepare(`
             INSERT OR REPLACE INTO products (
-              id, item_code, barcode, category_id, sub_category_id, item_name, unit,
+              id, item_code, category_id, sub_category_id, item_name, unit,
               quantity, minimum_quantity, cost, retail_price, retail_discount,
               wholesale_price, wholesale_discount, is_active, created_at, updated_at, version
             ) VALUES (
-              @id, @item_code, @barcode, @category_id, @sub_category_id, @item_name, @unit,
+              @id, @item_code, @category_id, @sub_category_id, @item_name, @unit,
               @quantity, @minimum_quantity, @cost, @retail_price, @retail_discount,
               @wholesale_price, @wholesale_discount, @is_active, @created_at, @updated_at, @version
             )
@@ -115,7 +115,6 @@ class SyncUploaderService {
               upsertProd.run({
                 id: p.id,
                 item_code: p.item_code,
-                barcode: p.barcode || null,
                 category_id: p.category_id || null,
                 sub_category_id: p.sub_category_id || null,
                 item_name: p.item_name,
@@ -281,7 +280,15 @@ class SyncUploaderService {
       }
 
       if (entityType === 'STOCK_MOVEMENT') {
-        return this.db.prepare('SELECT * FROM stock_movements WHERE reference_id = ? OR id = ?').get(entityId, entityId);
+        const movement = this.db.prepare('SELECT * FROM stock_movements WHERE reference_id = ? OR id = ?').get(entityId, entityId);
+        if (!movement) return null;
+        const product = this.db.prepare('SELECT quantity FROM products WHERE id = ?').get(movement.product_id);
+        return { ...movement, absoluteQuantity: product ? product.quantity : null };
+      }
+
+      if (entityType === 'PRODUCT') {
+        const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(entityId);
+        return product ? { product } : null;
       }
 
       return null;

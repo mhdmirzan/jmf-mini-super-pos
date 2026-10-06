@@ -1,6 +1,6 @@
 /**
  * Products Repository - CRUD operations for products.
- * Handles product search by barcode, item code, and text.
+ * Handles product search by item code and text.
  */
 
 const { v4: uuidv4 } = require('uuid');
@@ -13,27 +13,19 @@ class ProductRepository {
   /**
    * Create a new product.
    */
-  create({ itemCode, barcode, categoryId, subCategoryId, itemName, unit, quantity, minimumQuantity, cost, retailPrice, retailDiscount, wholesalePrice, createdBy }) {
+  create({ id: providedId, itemCode, categoryId, subCategoryId, itemName, unit, quantity, minimumQuantity, cost, retailPrice, retailDiscount, wholesalePrice, createdBy }) {
     // Check item_code uniqueness
     const existing = this.db.prepare('SELECT id FROM products WHERE item_code = ?').get(itemCode);
     if (existing) {
       return { success: false, error: 'Item code already exists.' };
     }
 
-    // Check barcode uniqueness if provided
-    if (barcode) {
-      const barcodeExists = this.db.prepare('SELECT id FROM products WHERE barcode = ?').get(barcode);
-      if (barcodeExists) {
-        return { success: false, error: 'Barcode already exists.' };
-      }
-    }
-
-    const id = uuidv4();
+    const id = providedId || uuidv4();
     const finalUnit = (unit && String(unit).trim().toUpperCase() === 'KG') ? 'KG' : 'PCS';
     this.db.prepare(
-      `INSERT INTO products (id, item_code, barcode, category_id, sub_category_id, item_name, unit, quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
-    ).run(id, itemCode, barcode || null, categoryId || null, subCategoryId || null, itemName, finalUnit, quantity || 0, minimumQuantity || 0, cost || 0, retailPrice || 0, retailDiscount || 0, wholesalePrice || 0);
+      `INSERT INTO products (id, item_code, category_id, sub_category_id, item_name, unit, quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
+    ).run(id, itemCode, categoryId || null, subCategoryId || null, itemName, finalUnit, quantity || 0, minimumQuantity || 0, cost || 0, retailPrice || 0, retailDiscount || 0, wholesalePrice || 0);
 
     // Stock movement for initial quantity
     if (quantity && quantity > 0) {
@@ -64,7 +56,7 @@ class ProductRepository {
   /**
    * Update a product.
    */
-  update({ id, itemCode, barcode, categoryId, subCategoryId, itemName, unit, minimumQuantity, cost, retailPrice, retailDiscount, wholesalePrice, isActive, updatedBy }) {
+  update({ id, itemCode, categoryId, subCategoryId, itemName, unit, minimumQuantity, cost, retailPrice, retailDiscount, wholesalePrice, isActive, updatedBy }) {
     const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     if (!product) {
       return { success: false, error: 'Product not found.' };
@@ -75,14 +67,6 @@ class ProductRepository {
       const existing = this.db.prepare('SELECT id FROM products WHERE item_code = ? AND id != ?').get(itemCode, id);
       if (existing) {
         return { success: false, error: 'Item code already exists.' };
-      }
-    }
-
-    // Check barcode uniqueness if changed
-    if (barcode && barcode !== product.barcode) {
-      const existing = this.db.prepare('SELECT id FROM products WHERE barcode = ? AND id != ?').get(barcode, id);
-      if (existing) {
-        return { success: false, error: 'Barcode already exists.' };
       }
     }
 
@@ -98,7 +82,6 @@ class ProductRepository {
     this.db.prepare(
       `UPDATE products SET
         item_code = COALESCE(?, item_code),
-        barcode = COALESCE(?, barcode),
         category_id = COALESCE(?, category_id),
         sub_category_id = COALESCE(?, sub_category_id),
         item_name = COALESCE(?, item_name),
@@ -113,7 +96,7 @@ class ProductRepository {
         version = version + 1
       WHERE id = ?`
     ).run(
-      itemCode || null, barcode || null, categoryId || null, subCategoryId || null,
+      itemCode || null, categoryId || null, subCategoryId || null,
       itemName || null, finalUnit, minimumQuantity !== undefined ? minimumQuantity : null,
       cost !== undefined ? cost : null, retailPrice !== undefined ? retailPrice : null,
       retailDiscount !== undefined ? retailDiscount : null,
@@ -165,9 +148,9 @@ class ProductRepository {
       params.push(filters.subCategoryId);
     }
     if (filters.search && filters.search.trim()) {
-      conditions.push('(p.barcode LIKE ? OR p.item_code LIKE ? OR p.item_name LIKE ?)');
+      conditions.push('(p.item_code LIKE ? OR p.item_name LIKE ?)');
       const term = `%${filters.search.trim()}%`;
-      params.push(term, term, term);
+      params.push(term, term);
     }
     if (filters.lowStock) {
       conditions.push('p.quantity <= p.minimum_quantity');
@@ -201,7 +184,7 @@ class ProductRepository {
   }
 
   /**
-   * Search products by barcode, item code, or name.
+   * Search products by item code or name.
    */
   search(query) {
     if (!query || query.trim() === '') {
@@ -214,35 +197,17 @@ class ProductRepository {
       LEFT JOIN categories c ON p.category_id = c.id
       LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
       WHERE p.is_active = 1 AND (
-        p.barcode LIKE ? OR
         p.item_code LIKE ? OR
         p.item_name LIKE ?
       )
       ORDER BY p.item_name ASC
       LIMIT 50
-    `).all(searchTerm, searchTerm, searchTerm);
+    `).all(searchTerm, searchTerm);
     return { success: true, products };
   }
 
   /**
-   * Get a product by barcode (used by barcode scanner).
-   */
-  getByBarcode(barcode) {
-    const product = this.db.prepare(`
-      SELECT p.*, c.name as category_name, sc.name as sub_category_name
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-      WHERE p.barcode = ? AND p.is_active = 1
-    `).get(barcode);
-    if (!product) {
-      return { success: false, error: 'Product not found.' };
-    }
-    return { success: true, product };
-  }
-
-  /**
-   * Get a product by item code.
+   * Get a product by item code (used by scanner / quick lookup).
    */
   getByItemCode(itemCode) {
     const product = this.db.prepare(`
