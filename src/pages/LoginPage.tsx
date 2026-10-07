@@ -1,15 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { authService } from '../services/api';
+import { settingsService } from '../services/api';
 import { Button, Input, Toast } from '../components/common';
-
-interface ActiveUserSummary {
-  id: string;
-  username: string;
-  fullName: string;
-  role: string;
-}
 
 export default function LoginPage() {
   const { user, login } = useAuth();
@@ -17,12 +10,10 @@ export default function LoginPage() {
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeUsers, setActiveUsers] = useState<ActiveUserSummary[]>([]);
+  const [shopName, setShopName] = useState('');
 
-  // If already logged in, redirect appropriately
   useEffect(() => {
     if (user) {
       const role = (user.role || '').toUpperCase();
@@ -30,26 +21,31 @@ export default function LoginPage() {
     }
   }, [user, navigate]);
 
-  // Load active registered users for quick terminal selection
   useEffect(() => {
-    const fetchUsers = async () => {
+    let cancelled = false;
+    (async () => {
       try {
-        const res = await authService.getActiveUsers();
-        if (res.success && Array.isArray(res.users)) {
-          setActiveUsers(res.users);
-        }
+        const res = await settingsService.get('SHOP_NAME');
+        if (cancelled) return;
+        const raw =
+          res?.setting?.setting_value ??
+          res?.value ??
+          (typeof res?.setting === 'string' ? res.setting : '');
+        if (raw) setShopName(String(raw).trim());
       } catch {
-        // Fallback
+        // keep empty until Admin sets a store name
       }
+    })();
+    return () => {
+      cancelled = true;
     };
-    fetchUsers();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanUsername = username.trim();
     if (!cleanUsername || !password) {
-      setError('Please enter both username and password');
+      setError('Please enter username and password');
       return;
     }
 
@@ -64,74 +60,26 @@ export default function LoginPage() {
         setError(result.error || 'Invalid credentials');
       }
     } catch (err: any) {
-      setError(err.message || 'An error occurred during authentication');
+      setError(err.message || 'Login failed');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSelectUser = (u: ActiveUserSummary) => {
-    setUsername(u.username);
-    setPassword('');
-    setError(null);
-  };
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[var(--pos-primary)] p-4 select-none">
-      <div className="w-full max-w-sm bg-white rounded border border-[var(--pos-border)] shadow-lg p-6 sm:p-7">
-        {/* Terminal Header */}
-        <div className="text-center mb-6">
-          <div className="inline-block px-2.5 py-1 rounded bg-[var(--pos-bg-subtle)] text-[var(--pos-text-muted)] font-mono text-xs font-semibold uppercase tracking-wider mb-2 border border-[var(--pos-border)]">
-            POS Terminal 01
-          </div>
-          <h1 className="text-xl font-bold text-[var(--pos-text)] tracking-tight">
-            MINI SUPER POS
-          </h1>
-          <p className="text-xs text-[var(--pos-text-muted)] mt-0.5">
-            Offline-First Retail Checkout
-          </p>
-        </div>
+    <div className="login-screen bg-[var(--pos-bg)] !p-10">
+      <div className="login-card !m-6 !p-10 !rounded-lg">
+        <h1 className="text-lg font-bold text-[var(--pos-text)] text-center !mb-7">
+          {shopName || 'Your Store'}
+        </h1>
 
-        {/* Error Alert */}
         {error && (
-          <div className="mb-4">
+          <div className="login-error !mb-4">
             <Toast message={error} type="error" onClose={() => setError(null)} />
           </div>
         )}
 
-        {/* Quick User Selector Chips */}
-        {activeUsers.length > 0 && (
-          <div className="mb-4 p-2.5 bg-[var(--pos-bg-subtle)] border border-[var(--pos-border)] rounded">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--pos-text-muted)] mb-1.5">
-              Select Cashier Account
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {activeUsers.map((u) => {
-                const isSelected = username.toLowerCase() === u.username.toLowerCase();
-                return (
-                  <button
-                    key={u.id}
-                    type="button"
-                    onClick={() => handleSelectUser(u)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded border cursor-pointer transition-colors ${
-                      isSelected
-                        ? 'bg-[var(--pos-primary)] text-white border-[var(--pos-primary)] font-semibold'
-                        : 'bg-white text-[var(--pos-text)] border-[var(--pos-border)] hover:bg-[var(--pos-bg-subtle)]'
-                    }`}
-                  >
-                    <span>{u.username}</span>
-                    <span className="text-[10px] ml-1 opacity-70 uppercase font-mono">
-                      ({u.role === 'SUPER_ADMIN' ? 'SUPER' : u.role})
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Login Form */}
-        <form onSubmit={handleSubmit} className="space-y-3">
+        <form onSubmit={handleSubmit} className="login-form !gap-5">
           <Input
             label="Username"
             required
@@ -144,44 +92,21 @@ export default function LoginPage() {
 
           <Input
             label="Password"
-            type={showPassword ? 'text' : 'password'}
+            type="password"
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={loading}
-            rightIcon={
-              <button
-                type="button"
-                tabIndex={-1}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setShowPassword((prev) => !prev)}
-                className="text-xs text-blue-600 hover:text-blue-800 font-semibold cursor-pointer px-1.5 py-0.5 rounded hover:bg-blue-50 transition-colors"
-                title={showPassword ? 'Hide password' : 'Show password'}
-              >
-                {showPassword ? 'Hide' : 'Show'}
-              </button>
-            }
           />
 
-          <div className="pt-2">
-            <Button
-              type="submit"
-              variant="primary"
-              size="lg"
-              fullWidth
-              disabled={loading}
-            >
-              {loading ? 'Authenticating...' : 'Sign In to Terminal'}
+          <div className="!pt-1">
+            <Button type="submit" variant="primary" size="lg" fullWidth disabled={loading}>
+              {loading ? 'Signing in…' : 'Sign In'}
             </Button>
           </div>
         </form>
 
-        {/* Default credentials reference */}
-        <div className="mt-5 pt-3 border-t border-[var(--pos-border)] text-center text-[11px] text-[var(--pos-text-muted)] space-y-0.5">
-          <div>superadmin / admin123</div>
-          <div>admin / admin123</div>
-          <div>cashier / cashier123</div>
-        </div>
+        <p className="login-footer">Powered by Buyra</p>
       </div>
     </div>
   );

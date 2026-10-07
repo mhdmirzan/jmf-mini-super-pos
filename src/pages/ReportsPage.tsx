@@ -20,7 +20,8 @@ type ReportTab = 'daily' | 'monthly' | 'products' | 'lowStock' | 'stockValue';
 
 export default function ReportsPage() {
   const { user } = useAuth();
-  const isSuperAdmin = (user?.role || '').toUpperCase() === 'SUPER_ADMIN';
+  const roleUpper = (user?.role || '').toUpperCase().trim();
+  const isSuperAdmin = roleUpper === 'SUPER_ADMIN' || roleUpper === 'SUPERADMIN';
 
   const [activeTab, setActiveTab] = useState<ReportTab>('daily');
   const [loading, setLoading] = useState(false);
@@ -125,6 +126,9 @@ export default function ReportsPage() {
         ['SUMMARY'],
         ['Total Invoices', String(dailyData?.summary?.total_invoices || '0')],
         ['Total Sales (Rs.)', Number(dailyData?.summary?.total_sales || 0).toFixed(2)],
+        ...(isSuperAdmin
+          ? [['Gross Profit (Rs.)', Number(dailyData?.summary?.gross_profit || 0).toFixed(2)]]
+          : []),
         ['Total Discounts (Rs.)', Number(dailyData?.summary?.total_discounts || 0).toFixed(2)],
         ['Cash Sales (Rs.)', Number(dailyData?.summary?.cash_sales || 0).toFixed(2)],
         ['Card Sales (Rs.)', Number(dailyData?.summary?.card_sales || 0).toFixed(2)],
@@ -156,6 +160,9 @@ export default function ReportsPage() {
         ['SUMMARY'],
         ['Total Invoices', String(monthlyData?.summary?.total_invoices || '0')],
         ['Total Sales (Rs.)', Number(monthlyData?.summary?.total_sales || 0).toFixed(2)],
+        ...(isSuperAdmin
+          ? [['Gross Profit (Rs.)', Number(monthlyData?.summary?.gross_profit || 0).toFixed(2)]]
+          : []),
         ['Total Discounts (Rs.)', Number(monthlyData?.summary?.total_discounts || 0).toFixed(2)],
         ['Cash Sales (Rs.)', Number(monthlyData?.summary?.cash_sales || 0).toFixed(2)],
         ['Card Sales (Rs.)', Number(monthlyData?.summary?.card_sales || 0).toFixed(2)],
@@ -204,7 +211,7 @@ export default function ReportsPage() {
         ['Generated At', new Date().toLocaleString()],
         [],
         ['LOW STOCK ITEMS'],
-        ['Item Code', 'Product Name', 'Category', 'Available Stock', 'Minimum Threshold', 'Deficit Needed'],
+        ['Item Code', 'Product Name', 'Available Stock', 'Minimum Threshold', 'Deficit Needed'],
       ];
 
       (lowStockData || []).forEach((p: any) => {
@@ -212,7 +219,6 @@ export default function ReportsPage() {
         rows.push([
           p.item_code,
           p.item_name,
-          p.category_name || '-',
           String(p.quantity),
           String(p.minimum_quantity),
           String(deficit),
@@ -297,27 +303,107 @@ export default function ReportsPage() {
         }
       />
 
-      {/* Tabs */}
-      <div className="pos-card p-1 flex gap-1 overflow-x-auto shrink-0">
-        {[
-          { key: 'daily', label: 'Daily Sales' },
-          { key: 'monthly', label: 'Monthly Summary' },
-          { key: 'products', label: 'Product Volume' },
-          { key: 'lowStock', label: 'Low Stock Deficit' },
-          { key: 'stockValue', label: 'Inventory Valuation' },
-        ].map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key as ReportTab)}
-            className={`px-3 py-1.5 text-xs font-semibold rounded cursor-pointer transition-colors whitespace-nowrap ${
-              activeTab === tab.key
-                ? 'bg-[var(--pos-primary)] text-white font-bold'
-                : 'text-[var(--pos-text-muted)] hover:text-[var(--pos-text)] hover:bg-[var(--pos-bg-subtle)]'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      {/* Tabs + filters on one line */}
+      <div className="flex flex-wrap items-center gap-2 shrink-0 py-1">
+        <div className="flex gap-1 overflow-x-auto">
+          {[
+            { key: 'daily', label: 'Daily Sales' },
+            { key: 'monthly', label: 'Monthly Summary' },
+            { key: 'products', label: 'Product Volume' },
+            { key: 'lowStock', label: 'Low Stock Deficit' },
+            { key: 'stockValue', label: 'Inventory Valuation' },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key as ReportTab)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded cursor-pointer transition-colors whitespace-nowrap ${
+                activeTab === tab.key
+                  ? 'bg-[var(--pos-primary)] text-white font-bold'
+                  : 'text-[var(--pos-text-muted)] hover:text-[var(--pos-text)] hover:bg-white/70'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 ml-auto">
+          {activeTab === 'daily' && (
+            <>
+              <span className="text-xs text-[var(--pos-text-muted)]">Select Date:</span>
+              <input
+                type="date"
+                value={dailyDate}
+                onChange={(e) => setDailyDate(e.target.value)}
+                className="pos-input py-1 px-2 text-xs bg-white border border-slate-300 rounded-lg"
+              />
+              <Button onClick={loadDailySales} variant="primary" size="sm">
+                Refresh
+              </Button>
+            </>
+          )}
+
+          {activeTab === 'monthly' && (
+            <>
+              <span className="text-xs text-[var(--pos-text-muted)]">Year:</span>
+              <input
+                type="number"
+                value={monthlyYear}
+                onChange={(e) => setMonthlyYear(parseInt(e.target.value) || 2026)}
+                className="pos-input py-1 px-2 text-xs w-20 font-mono bg-white border border-slate-300 rounded-lg"
+              />
+              <span className="text-xs text-[var(--pos-text-muted)]">Month:</span>
+              <select
+                value={monthlyMonth}
+                onChange={(e) => setMonthlyMonth(parseInt(e.target.value) || 1)}
+                className="pos-select py-1 px-2 text-xs bg-white border border-slate-300 rounded-lg"
+              >
+                {[
+                  'January', 'February', 'March', 'April', 'May', 'June',
+                  'July', 'August', 'September', 'October', 'November', 'December',
+                ].map((name, i) => (
+                  <option key={i + 1} value={i + 1}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              <Button onClick={loadMonthlySales} variant="primary" size="sm">
+                Refresh
+              </Button>
+            </>
+          )}
+
+          {activeTab === 'products' && (
+            <>
+              <span className="text-xs text-[var(--pos-text-muted)]">From:</span>
+              <input
+                type="date"
+                value={prodDateFrom}
+                onChange={(e) => setProdDateFrom(e.target.value)}
+                className="pos-input py-1 px-2 text-xs bg-white border border-slate-300 rounded-lg"
+              />
+              <span className="text-xs text-[var(--pos-text-muted)]">To:</span>
+              <input
+                type="date"
+                value={prodDateTo}
+                onChange={(e) => setProdDateTo(e.target.value)}
+                className="pos-input py-1 px-2 text-xs bg-white border border-slate-300 rounded-lg"
+              />
+              <Button onClick={loadProductSales} variant="primary" size="sm">
+                Filter
+              </Button>
+            </>
+          )}
+
+          {isSuperAdmin && (
+            <Button onClick={handleDownloadReport} variant="secondary" size="sm" className="flex items-center gap-1">
+              <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Export CSV
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Tab Viewport */}
@@ -325,33 +411,22 @@ export default function ReportsPage() {
         {/* Daily Sales */}
         {activeTab === 'daily' && (
           <div className="flex flex-col gap-3 h-full">
-            <div className="pos-card p-3 flex flex-wrap items-center gap-2 shrink-0">
-              <span className="text-xs text-[var(--pos-text-muted)]">Select Date:</span>
-              <input
-                type="date"
-                value={dailyDate}
-                onChange={(e) => setDailyDate(e.target.value)}
-                className="pos-input py-1 px-2 text-xs"
-              />
-              <Button onClick={loadDailySales} variant="primary" size="sm">
-                Refresh
-              </Button>
-              {isSuperAdmin && (
-                <Button onClick={handleDownloadReport} variant="secondary" size="sm" className="ml-auto flex items-center gap-1">
-                  <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  Export CSV
-                </Button>
-              )}
-            </div>
-
             {dailyData?.summary && (
-              <div className="grid grid-cols-4 gap-2 shrink-0">
+              <div className={`grid gap-2 shrink-0 ${isSuperAdmin ? 'grid-cols-5' : 'grid-cols-4'}`}>
                 <div className="pos-card p-3 text-center">
                   <span className="text-[11px] text-[var(--pos-text-muted)] uppercase tracking-wider block">Total Sales</span>
                   <PriceDisplay amount={dailyData.summary.total_sales} size="lg" className="font-bold text-[var(--pos-text)] mt-0.5" />
                 </div>
+                {isSuperAdmin && (
+                  <div className="pos-card p-3 text-center">
+                    <span className="text-[11px] text-[var(--pos-text-muted)] uppercase tracking-wider block">Profit</span>
+                    <PriceDisplay
+                      amount={dailyData.summary.gross_profit || 0}
+                      size="lg"
+                      className="font-bold text-[var(--pos-success)] mt-0.5"
+                    />
+                  </div>
+                )}
                 <div className="pos-card p-3 text-center">
                   <span className="text-[11px] text-[var(--pos-text-muted)] uppercase tracking-wider block">Invoices</span>
                   <span className="font-mono font-bold text-lg text-[var(--pos-text)] mt-0.5 block">
@@ -423,48 +498,22 @@ export default function ReportsPage() {
         {/* Monthly Summary */}
         {activeTab === 'monthly' && (
           <div className="flex flex-col gap-3 h-full">
-            <div className="pos-card p-3 flex flex-wrap items-center gap-2 shrink-0">
-              <span className="text-xs text-[var(--pos-text-muted)]">Year:</span>
-              <input
-                type="number"
-                value={monthlyYear}
-                onChange={(e) => setMonthlyYear(parseInt(e.target.value) || 2026)}
-                className="pos-input py-1 px-2 text-xs w-20 font-mono"
-              />
-              <span className="text-xs text-[var(--pos-text-muted)]">Month:</span>
-              <select
-                value={monthlyMonth}
-                onChange={(e) => setMonthlyMonth(parseInt(e.target.value) || 1)}
-                className="pos-select py-1 px-2 text-xs"
-              >
-                {[
-                  'January', 'February', 'March', 'April', 'May', 'June',
-                  'July', 'August', 'September', 'October', 'November', 'December',
-                ].map((name, i) => (
-                  <option key={i + 1} value={i + 1}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-              <Button onClick={loadMonthlySales} variant="primary" size="sm">
-                Refresh
-              </Button>
-              {isSuperAdmin && (
-                <Button onClick={handleDownloadReport} variant="secondary" size="sm" className="ml-auto flex items-center gap-1">
-                  <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  Export CSV
-                </Button>
-              )}
-            </div>
-
             {monthlyData?.summary && (
-              <div className="grid grid-cols-4 gap-2 shrink-0">
+              <div className={`grid gap-2 shrink-0 ${isSuperAdmin ? 'grid-cols-5' : 'grid-cols-4'}`}>
                 <div className="pos-card p-3 text-center">
                   <span className="text-[11px] text-[var(--pos-text-muted)] uppercase tracking-wider block">Monthly Total</span>
                   <PriceDisplay amount={monthlyData.summary.total_sales} size="lg" className="font-bold text-[var(--pos-text)] mt-0.5" />
                 </div>
+                {isSuperAdmin && (
+                  <div className="pos-card p-3 text-center">
+                    <span className="text-[11px] text-[var(--pos-text-muted)] uppercase tracking-wider block">Profit</span>
+                    <PriceDisplay
+                      amount={monthlyData.summary.gross_profit || 0}
+                      size="lg"
+                      className="font-bold text-[var(--pos-success)] mt-0.5"
+                    />
+                  </div>
+                )}
                 <div className="pos-card p-3 text-center">
                   <span className="text-[11px] text-[var(--pos-text-muted)] uppercase tracking-wider block">Invoices</span>
                   <span className="font-mono font-bold text-lg text-[var(--pos-text)] mt-0.5 block">
@@ -518,34 +567,6 @@ export default function ReportsPage() {
         {/* Product Volume */}
         {activeTab === 'products' && (
           <div className="flex flex-col gap-3 h-full">
-            <div className="pos-card p-3 flex flex-wrap items-center gap-2 shrink-0">
-              <span className="text-xs text-[var(--pos-text-muted)]">From:</span>
-              <input
-                type="date"
-                value={prodDateFrom}
-                onChange={(e) => setProdDateFrom(e.target.value)}
-                className="pos-input py-1 px-2 text-xs"
-              />
-              <span className="text-xs text-[var(--pos-text-muted)]">To:</span>
-              <input
-                type="date"
-                value={prodDateTo}
-                onChange={(e) => setProdDateTo(e.target.value)}
-                className="pos-input py-1 px-2 text-xs"
-              />
-              <Button onClick={loadProductSales} variant="primary" size="sm">
-                Filter
-              </Button>
-              {isSuperAdmin && (
-                <Button onClick={handleDownloadReport} variant="secondary" size="sm" className="ml-auto flex items-center gap-1">
-                  <svg className="w-3.5 h-3.5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  Export CSV
-                </Button>
-              )}
-            </div>
-
             <div className="pos-card flex-1 overflow-auto">
               <Table>
                 <TableHeader>
@@ -614,7 +635,6 @@ export default function ReportsPage() {
                 <TableRow>
                   <TableHead>Code</TableHead>
                   <TableHead>Product Name</TableHead>
-                  <TableHead>Category</TableHead>
                   <TableHead align="center">Unit</TableHead>
                   <TableHead align="right">Available Stock</TableHead>
                   <TableHead align="right">Threshold</TableHead>
@@ -624,7 +644,7 @@ export default function ReportsPage() {
               <TableBody>
                 {lowStockData.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-12 text-center text-[var(--pos-success)] font-semibold">
+                    <TableCell colSpan={6} className="py-12 text-center text-[var(--pos-success)] font-semibold">
                       ✓ All inventory items are currently above their minimum threshold.
                     </TableCell>
                   </TableRow>
@@ -639,9 +659,6 @@ export default function ReportsPage() {
                         </TableCell>
                         <TableCell className="font-medium text-xs text-[var(--pos-text)]">
                           {p.item_name}
-                        </TableCell>
-                        <TableCell className="text-xs text-[var(--pos-text-muted)]">
-                          {p.category_name || '-'}
                         </TableCell>
                         <TableCell align="center">
                           {isKg ? (

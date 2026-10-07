@@ -173,16 +173,19 @@ export default function InvoicesPage() {
         subtitle="Sales transactions and receipt reprints"
         count={invoices.length}
         actions={
-          <div className="text-xs text-[var(--pos-text-muted)] flex items-center gap-3">
+          <div className="text-sm text-[var(--pos-text-muted)] flex items-center gap-3">
             <span>
-              Total Sales: <strong className="font-mono text-[var(--pos-text)]">Rs. {totalSalesRevenue.toFixed(2)}</strong>
+              Total Sales:{' '}
+              <strong className="font-mono text-base font-bold text-[var(--pos-text)]">
+                Rs. {totalSalesRevenue.toFixed(2)}
+              </strong>
             </span>
           </div>
         }
       />
 
       {/* Search & Filters Bar */}
-      <div className="pos-card p-3 shrink-0">
+      <div className="shrink-0 py-1">
         <form onSubmit={handleSearchSubmit} className="flex flex-wrap gap-2 items-center">
           <div className="flex-1 min-w-[240px]">
             <Input
@@ -211,7 +214,7 @@ export default function InvoicesPage() {
               type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
-              className="pos-input py-1 px-2 text-xs"
+              className="pos-input py-1 px-2 text-xs bg-white border border-slate-300 rounded-lg"
             />
           </div>
 
@@ -221,7 +224,7 @@ export default function InvoicesPage() {
               type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
-              className="pos-input py-1 px-2 text-xs"
+              className="pos-input py-1 px-2 text-xs bg-white border border-slate-300 rounded-lg"
             />
           </div>
 

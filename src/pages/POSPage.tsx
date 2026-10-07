@@ -2,14 +2,19 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import {
   productService,
-  categoryService,
-  subCategoryService,
   invoiceService,
   settingsService,
   systemService,
   approvalService,
+  billDeletionService,
 } from '../services/api';
-import type { Product, Category, SubCategory, CartItem, Invoice } from '../types';
+import type { Product, CartItem, Invoice } from '../types';
+import {
+  nextBillReference,
+  formatDeletedItemLabel,
+  buildDeletionMessage,
+} from '../utils/posBill';
+import { effectiveWholesalePrice } from '../utils/pricing';
 import ReceiptModal from '../components/ReceiptModal';
 import {
   Button,
@@ -52,15 +57,14 @@ export default function POSPage() {
   const [autoAddOnScan, setAutoAddOnScan] = useState(false);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
-  // Search by Item Code, Category, Sub-Category State
+  // Search by Item Code / Name
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('');
-  const [selectedSubCategory, setSelectedSubCategory] = useState('');
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [subCategories, setSubCategories] = useState<SubCategory[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
+  const [searchHighlightIndex, setSearchHighlightIndex] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchResultsContainerRef = useRef<HTMLDivElement>(null);
   const addToBillButtonRef = useRef<HTMLButtonElement>(null);
+  const quantityInputRef = useRef<HTMLInputElement>(null);
 
   // Active Selected Product & Price Configuration
   const [activeProduct, setActiveProduct] = useState<Product | null>(null);
@@ -99,6 +103,8 @@ export default function POSPage() {
 
   // Cart state
   const [cart, setCart] = useState<CartItem[]>([]);
+  /** Draft bill number shown on open bills (8 digits until sale is completed). */
+  const [currentBillRef, setCurrentBillRef] = useState<string | null>(null);
 
   // Parked Sales (Hold / Recall)
   const [parkedSales, setParkedSales] = useState<ParkedSale[]>([]);
@@ -174,19 +180,17 @@ export default function POSPage() {
     }, 3500);
   };
 
-  // Load initial settings, products, and categories
+  // Load initial settings and products
   const loadInitialData = async () => {
     try {
-      const [sRes, dRes, cRes, pRes] = await Promise.all([
+      const [sRes, dRes, pRes] = await Promise.all([
         settingsService.get(),
         systemService.getDeviceId(),
-        categoryService.list(),
         productService.list({ isActive: true }),
       ]);
 
       if (sRes.success && sRes.settings) setShopSettings(sRes.settings);
       if (dRes.success) setDeviceId(dRes.deviceId);
-      if (cRes.success && cRes.categories) setCategories(cRes.categories);
       if (pRes.success && pRes.products) {
         setAllProducts(pRes.products.filter((p: Product) => p.is_active !== 0));
       }
@@ -199,30 +203,6 @@ export default function POSPage() {
     loadInitialData();
     barcodeInputRef.current?.focus();
   }, []);
-
-  // When selected category changes in Option 2, load sub-categories
-  useEffect(() => {
-    const fetchSubCategories = async () => {
-      if (!selectedCategory) {
-        setSubCategories([]);
-        setSelectedSubCategory('');
-        return;
-      }
-      try {
-        const res = await subCategoryService.list(selectedCategory);
-        if (res.success && res.subCategories) {
-          setSubCategories(res.subCategories);
-        } else {
-          setSubCategories([]);
-        }
-      } catch {
-        setSubCategories([]);
-      }
-      setSelectedSubCategory('');
-    };
-
-    fetchSubCategories();
-  }, [selectedCategory]);
 
   // Set the selected active product and populate its prices
   const selectProduct = (prod: Product, autoAddImmediately = false, forceQty?: number) => {
@@ -239,11 +219,7 @@ export default function POSPage() {
     const inCart = cart.find((it) => it.product.id === prod.id);
     const resolvedWholesale = (inCart && inCart.priceType === 'WHOLESALE' && inCart.unitPrice > 0)
       ? inCart.unitPrice
-      : ((masterProd.wholesale_price && masterProd.wholesale_price > 0)
-        ? masterProd.wholesale_price
-        : (prod.wholesale_price && prod.wholesale_price > 0
-          ? prod.wholesale_price
-          : Math.round(prod.retail_price * 0.9)));
+      : effectiveWholesalePrice(masterProd);
 
     setActiveProduct(prod);
     // If forceQty is passed (e.g. clicked an item from the invoice), use that quantity;
@@ -269,8 +245,15 @@ export default function POSPage() {
         true // increment on scan
       );
     } else {
+      // After barcode/search selection, focus quantity so cashier can edit then Enter to bill
       setTimeout(() => {
-        addToBillButtonRef.current?.focus();
+        const qtyInput = quantityInputRef.current;
+        if (qtyInput) {
+          qtyInput.focus();
+          qtyInput.select();
+        } else {
+          addToBillButtonRef.current?.focus();
+        }
       }, 50);
     }
   };
@@ -408,11 +391,7 @@ export default function POSPage() {
       ? approvedRate
       : (activeWholesalePriceRef.current > 0
         ? activeWholesalePriceRef.current
-        : (masterProd.wholesale_price && masterProd.wholesale_price > 0
-          ? masterProd.wholesale_price
-          : (targetProd.wholesale_price && targetProd.wholesale_price > 0
-            ? targetProd.wholesale_price
-            : Math.round(targetProd.retail_price * 0.9))));
+        : effectiveWholesalePrice(masterProd));
 
     setCart((prevCart) => {
       const existingIdx = prevCart.findIndex((it) => it.product.id === targetProd.id);
@@ -482,9 +461,7 @@ export default function POSPage() {
         if (!wPrice || wPrice <= 0) {
           wPrice = item.priceType === 'WHOLESALE' && item.unitPrice > 0
             ? item.unitPrice
-            : (item.product.wholesale_price && item.product.wholesale_price > 0
-              ? item.product.wholesale_price
-              : Math.round(masterProd.retail_price * 0.9));
+            : effectiveWholesalePrice(masterProd);
         }
 
         const numericPrice = Number(wPrice);
@@ -507,11 +484,7 @@ export default function POSPage() {
       const inCart = cart.find((it) => it.product.id === pendingProd.id);
       const wPrice = (inCart && inCart.priceType === 'WHOLESALE' && inCart.unitPrice > 0)
         ? inCart.unitPrice
-        : ((masterProd.wholesale_price && masterProd.wholesale_price > 0)
-          ? masterProd.wholesale_price
-          : (pendingProd.wholesale_price && pendingProd.wholesale_price > 0
-            ? pendingProd.wholesale_price
-            : Math.round(pendingProd.retail_price * 0.9)));
+        : effectiveWholesalePrice(masterProd);
 
       setActivePriceType('WHOLESALE');
       setActiveWholesalePrice(wPrice);
@@ -707,14 +680,6 @@ export default function POSPage() {
   const filteredSearchResults = useMemo(() => {
     let list = allProducts.filter((p) => p.is_active !== 0);
 
-    if (selectedCategory) {
-      list = list.filter((p) => p.category_id === selectedCategory);
-    }
-
-    if (selectedSubCategory) {
-      list = list.filter((p) => p.sub_category_id === selectedSubCategory);
-    }
-
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       list = list.filter(
@@ -725,7 +690,71 @@ export default function POSPage() {
     }
 
     return list.slice(0, 30);
-  }, [allProducts, selectedCategory, selectedSubCategory, searchQuery]);
+  }, [allProducts, searchQuery]);
+
+  // Reset / clamp keyboard highlight when search results change
+  useEffect(() => {
+    setSearchHighlightIndex(0);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (filteredSearchResults.length === 0) {
+      setSearchHighlightIndex(0);
+      return;
+    }
+    setSearchHighlightIndex((prev) =>
+      Math.min(prev, filteredSearchResults.length - 1)
+    );
+  }, [filteredSearchResults.length]);
+
+  // Keep highlighted search row visible while arrow-navigating
+  useEffect(() => {
+    if (entryMode !== 'SEARCH') return;
+    const row = searchResultsContainerRef.current?.querySelector(
+      `[data-search-row-index="${searchHighlightIndex}"]`
+    ) as HTMLElement | null;
+    row?.scrollIntoView({ block: 'nearest' });
+  }, [searchHighlightIndex, entryMode]);
+
+  useEffect(() => {
+    if (cart.length > 0 && !currentBillRef) {
+      setCurrentBillRef(nextBillReference());
+    }
+  }, [cart.length, currentBillRef]);
+
+  const resetDraftBillReference = () => setCurrentBillRef(null);
+
+  const recordCartItemRemoval = async (item: CartItem) => {
+    const billRef = currentBillRef || nextBillReference();
+    if (!currentBillRef) setCurrentBillRef(billRef);
+
+    const label = formatDeletedItemLabel(item);
+    const message = buildDeletionMessage(label, billRef);
+
+    try {
+      await billDeletionService.create({
+        billReference: billRef,
+        productId: item.product.id,
+        productName: item.product.item_name,
+        itemCode: item.product.item_code,
+        quantity: item.quantity,
+        unit: item.product.unit || 'PCS',
+        unitPrice: item.unitPrice,
+        lineAmount: item.amount,
+        cashierId: user?.id,
+        cashierName: user?.fullName || user?.username,
+        deviceId,
+        message,
+      });
+    } catch {
+      // Still show cashier feedback even if persistence fails
+    }
+
+    showStatus(message, 'warning');
+    window.dispatchEvent(
+      new CustomEvent('pos:bill-item-deleted', { detail: { message, billReference: billRef } })
+    );
+  };
 
   // Calculate cart totals
   const subtotal = Math.round(cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0) * 100) / 100;
@@ -743,11 +772,6 @@ export default function POSPage() {
   // Cart operations
   const updateCartQuantity = (index: number, newQty: number) => {
     if (newQty <= 0) {
-      if (!isAdminOrSuper) {
-        playSound('error');
-        showStatus('Only Admin or Super Admin can remove items from the bill', 'error');
-        return;
-      }
       removeCartItem(index);
       return;
     }
@@ -794,12 +818,19 @@ export default function POSPage() {
   };
 
   const removeCartItem = (index: number) => {
-    if (!isAdminOrSuper) {
-      playSound('error');
-      showStatus('Only Admin or Super Admin can remove items from the bill', 'error');
-      return;
+    const item = cart[index];
+    if (!item) return;
+
+    void recordCartItemRemoval(item);
+    playSound('scan');
+    setCart((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      if (next.length === 0) resetDraftBillReference();
+      return next;
+    });
+    if (activeProduct?.id === item.product.id) {
+      setActiveProduct(null);
     }
-    setCart((prev) => prev.filter((_, i) => i !== index));
   };
 
   const clearCart = () => {
@@ -811,6 +842,7 @@ export default function POSPage() {
     }
     if (window.confirm('Clear all items from current bill?')) {
       setCart([]);
+      resetDraftBillReference();
       setCashReceived('');
       setIsWholesaleApprovedForBill(false);
       setApprovedByName('');
@@ -839,6 +871,7 @@ export default function POSPage() {
     };
     setParkedSales((prev) => [newParked, ...prev]);
     setCart([]);
+    resetDraftBillReference();
     setCashReceived('');
     setIsWholesaleApprovedForBill(false);
     setApprovedByName('');
@@ -937,6 +970,7 @@ export default function POSPage() {
         setCompletedInvoice(fullInvoice);
         setIsReceiptOpen(true);
         setCart([]);
+        resetDraftBillReference();
         setCashReceived('');
         setIsWholesaleApprovedForBill(false);
         setApprovedByName('');
@@ -961,6 +995,36 @@ export default function POSPage() {
   // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Arrow navigation through Item Search results (while search field is focused)
+      if (entryMode === 'SEARCH' && filteredSearchResults.length > 0) {
+        const target = e.target as HTMLElement;
+        const inSearchField = target === searchInputRef.current;
+        const inSearchResults = Boolean(target?.closest?.('[data-search-results-table]'));
+
+        if (inSearchField || inSearchResults) {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setSearchHighlightIndex((prev) =>
+              Math.min(prev + 1, filteredSearchResults.length - 1)
+            );
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setSearchHighlightIndex((prev) => Math.max(prev - 1, 0));
+            return;
+          }
+          if (e.key === 'Enter') {
+            const highlighted = filteredSearchResults[searchHighlightIndex];
+            if (highlighted) {
+              e.preventDefault();
+              selectProduct(highlighted);
+              return;
+            }
+          }
+        }
+      }
+
       // 1. Enter: If active product is loaded, add to bill immediately
       if (e.key === 'Enter') {
         if (isReceiptOpen || isParkedModalOpen) return;
@@ -970,8 +1034,12 @@ export default function POSPage() {
         if (target === barcodeInputRef.current && barcodeInput.trim()) {
           return;
         }
-        // If in search input with query typed, let search input handle it
-        if (target === searchInputRef.current && searchQuery.trim()) {
+        // Quantity field handles Enter itself (add to bill)
+        if (target === quantityInputRef.current) {
+          return;
+        }
+        // Search Enter handled above for highlighted product
+        if (target === searchInputRef.current) {
           return;
         }
         // If inside a textarea or cash tender input, don't intercept
@@ -1020,6 +1088,8 @@ export default function POSPage() {
     activeProduct,
     barcodeInput,
     searchQuery,
+    searchHighlightIndex,
+    filteredSearchResults,
     activeQty,
     activePriceType,
     activeRetailPrice,
@@ -1044,7 +1114,7 @@ export default function POSPage() {
   const lineItemTotal = Math.round(selectedNetUnitPrice * activeQty * 100) / 100;
 
   return (
-    <div className="h-full flex flex-col p-4 select-none overflow-hidden gap-3 bg-[var(--pos-bg)]">
+    <div className="h-full flex flex-col pt-2 px-6 pb-6 select-none overflow-hidden gap-2 bg-[var(--pos-bg)]">
       {/* Toast Alert Banner */}
       {toast && (
         <Toast
@@ -1055,7 +1125,7 @@ export default function POSPage() {
       )}
 
       {/* POS Action Bar */}
-      <div className="pos-card px-4 py-2.5 flex items-center justify-between gap-3 shrink-0">
+      <div className="flex items-center justify-between gap-3 shrink-0 py-1">
         <div className="flex items-center gap-2">
           {/* Mode switch buttons */}
           <div className="inline-flex rounded border border-[var(--pos-border)] p-0.5 bg-[var(--pos-bg-subtle)]">
@@ -1151,15 +1221,7 @@ export default function POSPage() {
           {/* SEARCH / SCAN PANEL */}
           {entryMode === 'BARCODE' ? (
             /* Option 1: Barcode Scan Input */
-            <div className="pos-card p-4 shrink-0">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-[var(--pos-text)]">
-                  Scan / Enter Item Code
-                </span>
-                <span className="text-[11px] text-[var(--pos-text-muted)]">
-                  USB / Laser Scanner Ready
-                </span>
-              </div>
+            <div className="shrink-0 py-1">
               <form onSubmit={handleBarcodeSubmit} className="flex gap-2 items-stretch">
                 <div className="relative flex-1 flex">
                   <input
@@ -1167,7 +1229,8 @@ export default function POSPage() {
                     type="text"
                     value={barcodeInput}
                     onChange={(e) => setBarcodeInput(e.target.value)}
-                    className="w-full h-[42px] px-3 pr-8 text-sm font-semibold font-mono text-slate-900 bg-white border border-slate-300 rounded-lg transition-colors focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
+                    placeholder="Scan / Enter Item Code"
+                    className="w-full h-[42px] px-3 pr-8 text-sm font-semibold font-mono text-slate-900 bg-white border border-slate-300 rounded-lg transition-colors focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 placeholder:font-sans placeholder:font-normal placeholder:text-slate-400"
                     autoFocus
                   />
                   {barcodeInput && (
@@ -1189,7 +1252,7 @@ export default function POSPage() {
             /* Option 2: Search Filters & Product Results Table */
             <div className="pos-card p-4 flex flex-col gap-3 flex-[1.3] min-h-0 overflow-hidden">
               <div className="grid grid-cols-12 gap-2 shrink-0">
-                <div className="col-span-5">
+                <div className="col-span-12">
                   <Input
                     ref={searchInputRef}
                     value={searchQuery}
@@ -1198,31 +1261,14 @@ export default function POSPage() {
                     autoFocus
                   />
                 </div>
-                <div className="col-span-4">
-                  <Select
-                    value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
-                    options={[
-                      { value: '', label: `All Categories (${categories.length})` },
-                      ...categories.map((c) => ({ value: c.id, label: c.name })),
-                    ]}
-                  />
-                </div>
-                <div className="col-span-3">
-                  <Select
-                    value={selectedSubCategory}
-                    disabled={!selectedCategory || subCategories.length === 0}
-                    onChange={(e) => setSelectedSubCategory(e.target.value)}
-                    options={[
-                      { value: '', label: 'All Sub-Cats' },
-                      ...subCategories.map((sc) => ({ value: sc.id, label: sc.name })),
-                    ]}
-                  />
-                </div>
               </div>
 
-              {/* Search results table — ~130% taller than previous max-h-48 (12rem → 15.6rem) */}
-              <div className="border border-[var(--pos-border)] rounded flex-1 min-h-[15.6rem] overflow-y-auto bg-white">
+              {/* Search results table — arrow keys move highlight; Enter selects */}
+              <div
+                ref={searchResultsContainerRef}
+                data-search-results-table
+                className="border border-[var(--pos-border)] rounded flex-1 min-h-[15.6rem] overflow-y-auto bg-white"
+              >
                 {filteredSearchResults.length === 0 ? (
                   <div className="py-6 text-center text-xs text-[var(--pos-text-muted)]">
                     No products match the search criteria.
@@ -1233,7 +1279,6 @@ export default function POSPage() {
                       <TableRow>
                         <TableHead>Code</TableHead>
                         <TableHead>Product</TableHead>
-                        <TableHead>Category</TableHead>
                         <TableHead align="right">Retail</TableHead>
                         <TableHead align="right">Wholesale</TableHead>
                         <TableHead align="center">Stock</TableHead>
@@ -1241,14 +1286,19 @@ export default function POSPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredSearchResults.map((prod) => {
+                      {filteredSearchResults.map((prod, index) => {
                         const isSelected = activeProduct?.id === prod.id;
+                        const isHighlighted = index === searchHighlightIndex;
                         return (
                           <TableRow
                             key={prod.id}
-                            selected={isSelected}
-                            onClick={() => selectProduct(prod)}
-                            className="cursor-pointer"
+                            data-search-row-index={index}
+                            selected={isSelected || isHighlighted}
+                            onClick={() => {
+                              setSearchHighlightIndex(index);
+                              selectProduct(prod);
+                            }}
+                            className={`cursor-pointer ${isHighlighted && !isSelected ? 'ring-1 ring-inset ring-blue-400 bg-blue-50' : ''}`}
                           >
                             <TableCell monospace className="font-semibold text-xs text-[var(--pos-text-muted)]">
                               {prod.item_code}
@@ -1256,14 +1306,11 @@ export default function POSPage() {
                             <TableCell className="font-semibold text-[var(--pos-text)] truncate max-w-[160px]">
                               {prod.item_name}
                             </TableCell>
-                            <TableCell className="text-[var(--pos-text-muted)] text-xs truncate max-w-[120px]">
-                              {prod.category_name || '-'}
-                            </TableCell>
                             <TableCell align="right" monospace className="font-semibold">
                               Rs. {prod.retail_price.toFixed(2)}
                             </TableCell>
                             <TableCell align="right" monospace className="text-[var(--pos-text-muted)]">
-                              {prod.wholesale_price ? `Rs. ${prod.wholesale_price.toFixed(2)}` : '-'}
+                              {`Rs. ${effectiveWholesalePrice(prod).toFixed(2)}`}
                             </TableCell>
                             <TableCell align="center">
                               <div className="flex flex-col items-center gap-0.5">
@@ -1322,7 +1369,7 @@ export default function POSPage() {
               <div className="flex flex-col h-full justify-between gap-4">
                 {/* Header Information */}
                 <div>
-                  <div className="flex items-start justify-between gap-3 border-b border-[var(--pos-border)] pb-4">
+                  <div className="flex items-start justify-between gap-3 border-b border-[var(--pos-border)] pb-2">
                     <div className="flex flex-col gap-3 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <h2 className="text-xl font-bold text-[var(--pos-text)] tracking-tight">
@@ -1337,7 +1384,6 @@ export default function POSPage() {
                       </div>
                       <div className="text-xs text-[var(--pos-text-muted)] flex items-center gap-3 flex-wrap">
                         <span>Code: <strong className="font-mono text-[var(--pos-text)]">{activeProduct.item_code}</strong></span>
-                        <span>Category: <strong className="text-[var(--pos-text)]">{activeProduct.category_name || 'General'}</strong>{activeProduct.sub_category_name ? ` / ${activeProduct.sub_category_name}` : ''}</span>
                       </div>
                     </div>
 
@@ -1359,12 +1405,9 @@ export default function POSPage() {
                   </div>
 
                   {/* Pricing Matrix */}
-                  <div className="mt-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-xs font-semibold text-[var(--pos-text-muted)] uppercase tracking-wider">
-                        Pricing Details
-                      </span>
-                      {isAdminOrSuper && (
+                  <div className="mt-3">
+                    {isAdminOrSuper && (
+                      <div className="flex justify-end mb-2">
                         <button
                           type="button"
                           onClick={openCatalogPriceModal}
@@ -1373,8 +1416,8 @@ export default function POSPage() {
                         >
                           Update Catalog Price
                         </button>
-                      )}
-                    </div>
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-3 gap-5">
                       {/* Retail Price — same visual weight for cashier / admin / super admin */}
@@ -1449,7 +1492,7 @@ export default function POSPage() {
                   {/* Unit Price Display */}
                   <div className="flex flex-col gap-1">
                     <span className="text-[11px] font-semibold text-[var(--pos-text-muted)] uppercase">
-                      {isWholesaleApprovedForBill ? 'Wholesale Price' : 'Retail Price'}
+                      {isWholesaleApprovedForBill ? 'Wholesale Price' : 'Retail Price (Discounted)'}
                     </span>
                     <div className="flex items-center gap-2">
                       <span className="text-base font-mono font-bold text-[var(--pos-text)]">
@@ -1467,6 +1510,7 @@ export default function POSPage() {
                       Quantity ({(activeProduct.unit || '').toUpperCase() === 'KG' ? 'Kilograms' : 'Pieces'})
                     </span>
                     <QuantityControl
+                      inputRef={quantityInputRef}
                       value={activeQty}
                       min={(activeProduct.unit || '').toUpperCase() === 'KG' ? 0.001 : 1}
                       max={activeProduct.quantity}
@@ -1531,6 +1575,11 @@ export default function POSPage() {
                 <span className="text-xs font-bold text-[var(--pos-text)] uppercase tracking-wider">
                   Current Bill
                 </span>
+                {currentBillRef && (
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-white border border-[var(--pos-border)] text-[var(--pos-text)]">
+                    No. {currentBillRef}
+                  </span>
+                )}
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded font-mono uppercase tracking-wide border ${
                   isWholesaleApprovedForBill
                     ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
@@ -1668,25 +1717,15 @@ export default function POSPage() {
                           Rs. {item.amount.toFixed(2)}
                         </TableCell>
 
-                        {/* Line Item Deletion: Restricted strictly to Admin/Super Admin */}
                         <TableCell align="center" onClick={(e) => e.stopPropagation()}>
-                          {isAdminOrSuper ? (
-                            <button
-                              type="button"
-                              onClick={() => removeCartItem(index)}
-                              className="text-[var(--pos-text-muted)] hover:text-[var(--pos-danger)] font-bold text-sm cursor-pointer transition-colors p-1"
-                              title="Remove item (Admin only)"
-                            >
-                              ✕
-                            </button>
-                          ) : (
-                            <span
-                              className="text-[11px] text-slate-300 select-none"
-                              title="Invoice items are read-only. Quantity changes must be made through the left-side product selection workflow."
-                            >
-                              🔒
-                            </span>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => removeCartItem(index)}
+                            className="text-[var(--pos-text-muted)] hover:text-[var(--pos-danger)] font-bold text-sm cursor-pointer transition-colors p-1"
+                            title="Remove item from bill"
+                          >
+                            ✕
+                          </button>
                         </TableCell>
                       </TableRow>
                     ))}

@@ -66,8 +66,8 @@ class ReturnsRepository {
 
       // Process each return item
       const insertReturnItem = this.db.prepare(
-        `INSERT INTO sales_return_items (id, return_id, invoice_item_id, product_id, item_code, item_name, category_id, sales_price, quantity, reason, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+        `INSERT INTO sales_return_items (id, return_id, invoice_item_id, product_id, item_code, item_name, sales_price, quantity, reason, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
       );
       const updateStock = this.db.prepare(
         "UPDATE products SET quantity = quantity + ?, updated_at = datetime('now'), version = version + 1 WHERE id = ?"
@@ -91,14 +91,10 @@ class ReturnsRepository {
           throw new Error(`Invalid return quantity for ${invoiceItem.item_name}.`);
         }
 
-        // Get product for category_id
-        const product = this.db.prepare('SELECT category_id FROM products WHERE id = ?').get(invoiceItem.product_id);
-
         // Insert return item
         insertReturnItem.run(
           uuidv4(), returnId, item.invoiceItemId,
           invoiceItem.product_id, invoiceItem.item_code, invoiceItem.item_name,
-          product ? product.category_id : null,
           invoiceItem.unit_price, item.quantity,
           item.reason || reason
         );

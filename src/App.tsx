@@ -6,12 +6,12 @@ import Layout from './components/Layout';
 import MenuPage from './pages/MenuPage';
 import POSPage from './pages/POSPage';
 import ProductsPage from './pages/ProductsPage';
-import CategoriesPage from './pages/CategoriesPage';
 import InvoicesPage from './pages/InvoicesPage';
 import ReturnsPage from './pages/ReturnsPage';
 import UsersPage from './pages/UsersPage';
 import SettingsPage from './pages/SettingsPage';
 import ReportsPage from './pages/ReportsPage';
+import BillDeletionsPage from './pages/BillDeletionsPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
@@ -92,18 +92,18 @@ function AppRoutes() {
           }
         />
         <Route
-          path="categories"
-          element={
-            <RoleRoute allowedRoles={['SUPER_ADMIN', 'ADMIN']}>
-              <CategoriesPage />
-            </RoleRoute>
-          }
-        />
-        <Route
           path="invoices"
           element={
             <RoleRoute allowedRoles={['SUPER_ADMIN', 'ADMIN']}>
               <InvoicesPage />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="bill-deletions"
+          element={
+            <RoleRoute allowedRoles={['SUPER_ADMIN', 'ADMIN']}>
+              <BillDeletionsPage />
             </RoleRoute>
           }
         />
@@ -126,7 +126,7 @@ function AppRoutes() {
         <Route
           path="users"
           element={
-            <RoleRoute allowedRoles={['SUPER_ADMIN']}>
+            <RoleRoute allowedRoles={['SUPER_ADMIN', 'ADMIN']}>
               <UsersPage />
             </RoleRoute>
           }

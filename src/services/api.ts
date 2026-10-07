@@ -91,19 +91,6 @@ export const productService = {
   getByItemCode: (itemCode: string) => api.invoke('products:getByItemCode', { itemCode }),
 };
 
-// ─── CATEGORIES ───
-export const categoryService = {
-  create: (data: any) => persistToServer('categories:create', { ...data, id: data.id || newEntityId() }),
-  update: (data: any) => persistToServer('categories:update', data),
-  list: () => api.invoke('categories:list'),
-};
-
-export const subCategoryService = {
-  create: (data: any) => persistToServer('subcategories:create', { ...data, id: data.id || newEntityId() }),
-  update: (data: any) => persistToServer('subcategories:update', data),
-  list: (categoryId?: string) => api.invoke('subcategories:list', { categoryId }),
-};
-
 // ─── INVOICES ───
 export const invoiceService = {
   create: (data: any) => api.invoke('invoices:create', data),
@@ -311,5 +298,142 @@ export const approvalService = {
       return window.electronAPI.invoke('approval:verifyAdmin', credentials);
     }
     return webApiInvoke('approval:verifyAdmin', credentials);
+  },
+};
+
+// ─── BILL ITEM DELETIONS (Local SQLite + Cloudflare D1) ───
+export const billDeletionService = {
+  create: async (data: {
+    billReference: string;
+    productId?: string;
+    productName: string;
+    itemCode?: string;
+    quantity: number;
+    unit?: string;
+    unitPrice?: number;
+    lineAmount?: number;
+    cashierId?: string;
+    cashierName?: string;
+    deviceId?: string;
+    message: string;
+  }) => {
+    const id =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : Date.now().toString(36) + Math.random().toString(36).substring(2);
+    const payload = { ...data, id };
+
+    let localResult: any = null;
+    let cloudResult: any = null;
+
+    if (window.electronAPI) {
+      try {
+        localResult = await window.electronAPI.invoke('billDeletion:create', payload);
+      } catch (err) {
+        console.warn('[BillDeletion] Local create error:', err);
+      }
+    }
+
+    try {
+      cloudResult = await webApiInvoke('billDeletion:create', payload);
+    } catch (err) {
+      console.warn('[BillDeletion] Cloud create error:', err);
+    }
+
+    if (localResult?.success || cloudResult?.success) {
+      return { success: true, id: localResult?.id || cloudResult?.id || id };
+    }
+    return {
+      success: false,
+      error: cloudResult?.error || localResult?.error || 'Failed to record bill item deletion',
+    };
+  },
+
+  list: async (filters?: {
+    limit?: number;
+    billReference?: string;
+    cashierId?: string;
+    unseenByAdminOnly?: boolean;
+  }) => {
+    let localRows: any[] = [];
+    let cloudRows: any[] = [];
+
+    if (window.electronAPI) {
+      try {
+        const res = await window.electronAPI.invoke('billDeletion:list', filters || {});
+        if (res?.success && Array.isArray(res.deletions)) {
+          localRows = res.deletions;
+        }
+      } catch (err) {
+        console.warn('[BillDeletion] Local list error:', err);
+      }
+    }
+
+    try {
+      const res = await webApiInvoke('billDeletion:list', filters || {});
+      if (res?.success && Array.isArray(res.deletions)) {
+        cloudRows = res.deletions;
+      }
+    } catch (err) {
+      console.warn('[BillDeletion] Cloud list error:', err);
+    }
+
+    const merged = new Map<string, any>();
+    for (const r of localRows) merged.set(r.id, r);
+    for (const r of cloudRows) merged.set(r.id, r);
+
+    const deletions = Array.from(merged.values()).sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    const limit = filters?.limit ?? 100;
+    return { success: true, deletions: deletions.slice(0, limit) };
+  },
+
+  markAdminSeen: async (ids?: string[]) => {
+    const payload = { ids: ids || [] };
+    let localOk = false;
+    let cloudOk = false;
+
+    if (window.electronAPI) {
+      try {
+        const res = await window.electronAPI.invoke('billDeletion:markAdminSeen', payload);
+        if (res?.success) localOk = true;
+      } catch (err) {
+        console.warn('[BillDeletion] Local markAdminSeen error:', err);
+      }
+    }
+
+    try {
+      const res = await webApiInvoke('billDeletion:markAdminSeen', payload);
+      if (res?.success) cloudOk = true;
+    } catch (err) {
+      console.warn('[BillDeletion] Cloud markAdminSeen error:', err);
+    }
+
+    return { success: localOk || cloudOk };
+  },
+
+  countUnseenAdmin: async () => {
+    let localCount = 0;
+    let cloudCount = 0;
+
+    if (window.electronAPI) {
+      try {
+        const res = await window.electronAPI.invoke('billDeletion:countUnseenAdmin');
+        if (res?.success) localCount = res.count || 0;
+      } catch (err) {
+        console.warn('[BillDeletion] Local countUnseenAdmin error:', err);
+      }
+    }
+
+    try {
+      const res = await webApiInvoke('billDeletion:countUnseenAdmin');
+      if (res?.success) cloudCount = res.count || 0;
+    } catch (err) {
+      console.warn('[BillDeletion] Cloud countUnseenAdmin error:', err);
+    }
+
+    return { success: true, count: Math.max(localCount, cloudCount) };
   },
 };

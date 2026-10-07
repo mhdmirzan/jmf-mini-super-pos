@@ -1,6 +1,6 @@
 /**
  * Wipe transactional/history data and permanently remove archived products.
- * Keeps: active products, categories, sub_categories, users, system_settings, devices.
+ * Keeps: active products, users, system_settings, devices.
  */
 const fs = require('fs');
 const path = require('path');
@@ -51,7 +51,6 @@ const after = {
   auditLogs: db.prepare('SELECT COUNT(*) AS c FROM audit_logs').get().c,
   archived: db.prepare('SELECT COUNT(*) AS c FROM products WHERE is_active = 0').get().c,
   products: db.prepare('SELECT COUNT(*) AS c FROM products').get().c,
-  categories: db.prepare('SELECT COUNT(*) AS c FROM categories').get().c,
   users: db.prepare('SELECT COUNT(*) AS c FROM users').get().c,
 };
 
@@ -59,5 +58,5 @@ db.close();
 
 console.log(`[Reset] Cleared local DB at ${dbPath}`);
 console.log(`[Reset] Removed: invoices=${before.invoices}, invoice_items=${before.invoiceItems}, returns=${before.returns}, stock_movements=${before.movements}, sync_queue=${before.syncQueue}, audit_logs=${before.auditLogs}, approvals=${before.approvals}, archived_products=${before.archived}`);
-console.log(`[Reset] Kept: active_products=${before.activeProducts} (now ${after.products}), categories=${after.categories}, users=${after.users}`);
+console.log(`[Reset] Kept: active_products=${before.activeProducts} (now ${after.products}), users=${after.users}`);
 console.log(`[Reset] Remaining: invoices=${after.invoices}, movements=${after.movements}, sync=${after.syncQueue}, audit=${after.auditLogs}, archived=${after.archived}`);

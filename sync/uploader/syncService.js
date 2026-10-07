@@ -51,7 +51,7 @@ class SyncUploaderService {
   }
 
   /**
-   * Pull active categories and products from central cloud database to keep catalog synced
+   * Pull products from central cloud database to keep catalog synced
    */
   async pullCatalog() {
     try {
@@ -59,38 +59,6 @@ class SyncUploaderService {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
 
-      // 1. Fetch and merge categories
-      try {
-        const catRes = await fetch(`${targetUrl}/api/categories`, { signal: controller.signal });
-        if (catRes.ok) {
-          const catJson = await catRes.json();
-          const catList = catJson.categories || catJson.data || [];
-          if (catJson.success && Array.isArray(catList)) {
-            const insertCat = this.db.prepare(`
-              INSERT OR REPLACE INTO categories (id, name, created_at, updated_at)
-              VALUES (?, ?, datetime('now'), datetime('now'))
-            `);
-            const insertSub = this.db.prepare(`
-              INSERT OR REPLACE INTO sub_categories (id, category_id, name, created_at, updated_at)
-              VALUES (?, ?, ?, datetime('now'), datetime('now'))
-            `);
-            this.db.transaction(() => {
-              for (const cat of catList) {
-                insertCat.run(cat.id, cat.name);
-                if (Array.isArray(cat.sub_categories)) {
-                  for (const sub of cat.sub_categories) {
-                    insertSub.run(sub.id, cat.id, sub.name);
-                  }
-                }
-              }
-            })();
-          }
-        }
-      } catch (catErr) {
-        // category fetch non-fatal
-      }
-
-      // 2. Fetch and merge products
       const prodRes = await fetch(`${targetUrl}/api/products`, { signal: controller.signal });
       clearTimeout(timeout);
 
@@ -100,11 +68,11 @@ class SyncUploaderService {
         if (prodJson.success && Array.isArray(prodList) && prodList.length > 0) {
           const upsertProd = this.db.prepare(`
             INSERT OR REPLACE INTO products (
-              id, item_code, category_id, sub_category_id, item_name, unit,
+              id, item_code, item_name, unit,
               quantity, minimum_quantity, cost, retail_price, retail_discount,
               wholesale_price, wholesale_discount, is_active, created_at, updated_at, version
             ) VALUES (
-              @id, @item_code, @category_id, @sub_category_id, @item_name, @unit,
+              @id, @item_code, @item_name, @unit,
               @quantity, @minimum_quantity, @cost, @retail_price, @retail_discount,
               @wholesale_price, @wholesale_discount, @is_active, @created_at, @updated_at, @version
             )
@@ -115,8 +83,6 @@ class SyncUploaderService {
               upsertProd.run({
                 id: p.id,
                 item_code: p.item_code,
-                category_id: p.category_id || null,
-                sub_category_id: p.sub_category_id || null,
                 item_name: p.item_name,
                 unit: p.unit || 'PCS',
                 quantity: p.quantity != null ? p.quantity : 0,

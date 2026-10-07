@@ -2,11 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import {
   productService,
-  categoryService,
-  subCategoryService,
   stockService,
 } from '../services/api';
-import type { Product, Category, SubCategory, StockMovement } from '../types';
+import type { Product, StockMovement } from '../types';
 import {
   Button,
   Input,
@@ -23,6 +21,7 @@ import {
   Toast,
   EmptyState,
 } from '../components/common';
+import { effectiveWholesalePrice } from '../utils/pricing';
 
 export default function ProductsPage() {
   const { user } = useAuth();
@@ -31,13 +30,10 @@ export default function ProductsPage() {
   const canManageProducts = isSuperAdmin || userRole === 'ADMIN';
 
   const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [subCategories, setSubCategories] = useState<SubCategory[]>([]);
   const [loading, setLoading] = useState(false);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [lowStockOnly, setLowStockOnly] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'ACTIVE' | 'ALL' | 'INACTIVE'>('ACTIVE');
 
@@ -56,11 +52,55 @@ export default function ProductsPage() {
     type: 'success' | 'error' | 'warning' | 'info';
   } | null>(null);
 
+  const playFeedbackSound = (type: 'success' | 'warning' | 'error') => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      if (type === 'success') {
+        // Pleasant rising two-tone chime
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(523.25, ctx.currentTime);
+        osc.frequency.setValueAtTime(783.99, ctx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.14, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.32);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.32);
+      } else if (type === 'warning') {
+        // Soft double beep for duplicate / already exists
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(660, ctx.currentTime);
+        osc.frequency.setValueAtTime(440, ctx.currentTime + 0.12);
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.setValueAtTime(0.12, ctx.currentTime + 0.1);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.35);
+      } else {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(220, ctx.currentTime);
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.2);
+      }
+    } catch {
+      // Audio blocked / unsupported
+    }
+  };
+
+  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
+    setToast({ message, type });
+  };
+
   // Form State
   const [formData, setFormData] = useState({
     itemCode: '',
-    categoryId: '',
-    subCategoryId: '',
     itemName: '',
     unit: 'PCS' as 'PCS' | 'KG',
     quantity: 0,
@@ -82,17 +122,11 @@ export default function ProductsPage() {
     try {
       const pRes = await productService.list({
         search: searchQuery || undefined,
-        categoryId: selectedCategory || undefined,
         lowStockOnly: lowStockOnly || undefined,
         isActive: statusFilter === 'ALL' ? undefined : (statusFilter === 'ACTIVE'),
       });
       if (pRes.success && pRes.products) {
         setProducts(pRes.products);
-      }
-
-      const cRes = await categoryService.list();
-      if (cRes.success && cRes.categories) {
-        setCategories(cRes.categories);
       }
     } catch (err: any) {
       showToast('Error loading stock: ' + err.message, 'error');
@@ -103,29 +137,11 @@ export default function ProductsPage() {
 
   useEffect(() => {
     loadData();
-  }, [searchQuery, selectedCategory, lowStockOnly, statusFilter]);
-
-  const handleCategorySelect = async (catId: string) => {
-    setFormData((prev) => ({ ...prev, categoryId: catId, subCategoryId: '' }));
-    if (catId) {
-      const res = await subCategoryService.list(catId);
-      if (res.success && res.subCategories) {
-        setSubCategories(res.subCategories);
-      }
-    } else {
-      setSubCategories([]);
-    }
-  };
-
-  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
-    setToast({ message, type });
-  };
+  }, [searchQuery, lowStockOnly, statusFilter]);
 
   const openAddModal = () => {
     setFormData({
       itemCode: '',
-      categoryId: '',
-      subCategoryId: '',
       itemName: '',
       unit: 'PCS',
       quantity: 0,
@@ -136,7 +152,6 @@ export default function ProductsPage() {
       wholesalePrice: 0,
       isActive: 1,
     });
-    setSubCategories([]);
     setIsAddModalOpen(true);
   };
 
@@ -144,8 +159,6 @@ export default function ProductsPage() {
     setEditingProduct(product);
     setFormData({
       itemCode: product.item_code,
-      categoryId: product.category_id || '',
-      subCategoryId: product.sub_category_id || '',
       itemName: product.item_name,
       unit: ((product.unit || '').toUpperCase() === 'KG' ? 'KG' : 'PCS') as 'PCS' | 'KG',
       quantity: product.quantity,
@@ -156,15 +169,6 @@ export default function ProductsPage() {
       wholesalePrice: product.wholesale_price,
       isActive: product.is_active,
     });
-
-    if (product.category_id) {
-      const res = await subCategoryService.list(product.category_id);
-      if (res.success && res.subCategories) {
-        setSubCategories(res.subCategories);
-      }
-    } else {
-      setSubCategories([]);
-    }
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
@@ -183,8 +187,6 @@ export default function ProductsPage() {
         const res = await productService.update({
           id: editingProduct.id,
           itemCode: formData.itemCode.trim().toUpperCase(),
-          categoryId: formData.categoryId || null,
-          subCategoryId: formData.subCategoryId || null,
           itemName: formData.itemName.trim(),
           unit: formData.unit || 'PCS',
           minimumQuantity: Number(formData.minimumQuantity),
@@ -205,8 +207,6 @@ export default function ProductsPage() {
       } else {
         const res = await productService.create({
           itemCode: formData.itemCode.trim().toUpperCase(),
-          categoryId: formData.categoryId || undefined,
-          subCategoryId: formData.subCategoryId || undefined,
           itemName: formData.itemName.trim(),
           unit: formData.unit || 'PCS',
           quantity: Number(formData.quantity) || 0,
@@ -219,11 +219,10 @@ export default function ProductsPage() {
         });
 
         if (res.success) {
+          playFeedbackSound('success');
           showToast('Product created successfully', 'success');
           setFormData({
             itemCode: '',
-            categoryId: formData.categoryId,
-            subCategoryId: formData.subCategoryId,
             itemName: '',
             unit: formData.unit || 'PCS',
             quantity: 0,
@@ -236,10 +235,14 @@ export default function ProductsPage() {
           });
           loadData();
         } else {
-          showToast(res.error || 'Failed to create product', 'error');
+          const errMsg = res.error || 'Failed to create product';
+          const isDuplicate = /already exists/i.test(errMsg);
+          playFeedbackSound(isDuplicate ? 'warning' : 'error');
+          showToast(errMsg, isDuplicate ? 'warning' : 'error');
         }
       }
     } catch (err: any) {
+      playFeedbackSound('error');
       showToast(err.message || 'Error saving product', 'error');
     }
   };
@@ -360,23 +363,12 @@ export default function ProductsPage() {
       />
 
       {/* Search & Filter Bar */}
-      <div className="pos-card p-3 flex flex-wrap gap-2 items-center shrink-0">
+      <div className="flex flex-wrap gap-2 items-center shrink-0 py-1">
         <div className="flex-1 min-w-[240px]">
           <Input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search product code or name..."
-          />
-        </div>
-
-        <div className="w-56">
-          <Select
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-            options={[
-              { value: '', label: `All Categories (${categories.length})` },
-              ...categories.map((c) => ({ value: c.id, label: c.name })),
-            ]}
           />
         </div>
 
@@ -392,13 +384,12 @@ export default function ProductsPage() {
           />
         </div>
 
-        {(searchQuery || selectedCategory || lowStockOnly || statusFilter !== 'ACTIVE') && (
+        {(searchQuery || lowStockOnly || statusFilter !== 'ACTIVE') && (
           <Button
             variant="ghost"
             size="sm"
             onClick={() => {
               setSearchQuery('');
-              setSelectedCategory('');
               setLowStockOnly(false);
               setStatusFilter('ACTIVE');
             }}
@@ -415,7 +406,6 @@ export default function ProductsPage() {
             <TableRow>
               <TableHead>Code</TableHead>
               <TableHead>Product</TableHead>
-              <TableHead>Category</TableHead>
               <TableHead align="center">Unit</TableHead>
               <TableHead align="right">Stock</TableHead>
               <TableHead align="right">Min Alert</TableHead>
@@ -429,13 +419,13 @@ export default function ProductsPage() {
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={isSuperAdmin ? 11 : 10} className="py-12 text-center text-[var(--pos-text-muted)]">
+                <TableCell colSpan={isSuperAdmin ? 10 : 9} className="py-12 text-center text-[var(--pos-text-muted)]">
                   Loading stock data...
                 </TableCell>
               </TableRow>
             ) : products.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={isSuperAdmin ? 11 : 10} className="py-12 text-center">
+                <TableCell colSpan={isSuperAdmin ? 10 : 9} className="py-12 text-center">
                   <EmptyState
                     title="No products found"
                     description="Try adjusting your search criteria or add a new product."
@@ -453,10 +443,6 @@ export default function ProductsPage() {
                     </TableCell>
                     <TableCell className="font-medium text-[var(--pos-text)]">
                       {p.item_name}
-                    </TableCell>
-                    <TableCell className="text-xs text-[var(--pos-text-muted)]">
-                      {p.category_name || '-'}
-                      {p.sub_category_name && ` / ${p.sub_category_name}`}
                     </TableCell>
                     <TableCell align="center">
                       {isKg ? (
@@ -497,7 +483,7 @@ export default function ProductsPage() {
                       )}
                     </TableCell>
                     <TableCell align="right" monospace className="text-xs text-[var(--pos-text-muted)]">
-                      {p.wholesale_price ? `Rs. ${p.wholesale_price.toFixed(2)}` : '-'}
+                      Rs. {effectiveWholesalePrice(p).toFixed(2)}
                     </TableCell>
                     <TableCell align="center">
                       <span
@@ -637,30 +623,6 @@ export default function ProductsPage() {
                   Kilograms (Weight / Kg)
                 </button>
               </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 mt-3">
-              <Select
-                label="Category"
-                value={formData.categoryId}
-                onChange={(e) => handleCategorySelect(e.target.value)}
-                options={[
-                  { value: '', label: 'Select Category' },
-                  ...categories.map((c) => ({ value: c.id, label: c.name })),
-                ]}
-              />
-              <Select
-                label="Sub Category"
-                value={formData.subCategoryId}
-                onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, subCategoryId: e.target.value }))
-                }
-                disabled={!formData.categoryId}
-                options={[
-                  { value: '', label: 'Select Sub Category' },
-                  ...subCategories.map((sc) => ({ value: sc.id, label: sc.name })),
-                ]}
-              />
             </div>
           </div>
 

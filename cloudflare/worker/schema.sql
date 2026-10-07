@@ -1,4 +1,4 @@
--- Cloudflare D1 Central SQLite Schema for Mini Super POS
+-- Cloudflare D1 Central SQLite Schema for Buyra POS
 
 -- Users Table
 CREATE TABLE IF NOT EXISTS users (
@@ -14,31 +14,10 @@ CREATE TABLE IF NOT EXISTS users (
   version INTEGER NOT NULL DEFAULT 1
 );
 
--- Categories Table
-CREATE TABLE IF NOT EXISTS categories (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Sub Categories Table
-CREATE TABLE IF NOT EXISTS sub_categories (
-  id TEXT PRIMARY KEY,
-  category_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (category_id) REFERENCES categories(id),
-  UNIQUE(category_id, name)
-);
-
 -- Products Table
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   item_code TEXT NOT NULL UNIQUE,
-  category_id TEXT,
-  sub_category_id TEXT,
   item_name TEXT NOT NULL,
   unit TEXT NOT NULL DEFAULT 'PCS',
   quantity REAL NOT NULL DEFAULT 0,
@@ -50,9 +29,7 @@ CREATE TABLE IF NOT EXISTS products (
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  version INTEGER NOT NULL DEFAULT 1,
-  FOREIGN KEY (category_id) REFERENCES categories(id),
-  FOREIGN KEY (sub_category_id) REFERENCES sub_categories(id)
+  version INTEGER NOT NULL DEFAULT 1
 );
 
 -- Invoices Table
@@ -110,7 +87,6 @@ CREATE TABLE IF NOT EXISTS sales_return_items (
   product_id TEXT NOT NULL,
   item_code TEXT NOT NULL,
   item_name TEXT NOT NULL,
-  category_id TEXT,
   sales_price REAL NOT NULL DEFAULT 0,
   quantity REAL NOT NULL DEFAULT 1,
   reason TEXT,
@@ -165,6 +141,25 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Bill item deletions (cashier removals from open bills — admin notifications)
+CREATE TABLE IF NOT EXISTS bill_item_deletions (
+  id TEXT PRIMARY KEY,
+  bill_reference TEXT NOT NULL,
+  product_id TEXT,
+  product_name TEXT NOT NULL,
+  item_code TEXT,
+  quantity REAL NOT NULL,
+  unit TEXT,
+  unit_price REAL NOT NULL DEFAULT 0,
+  line_amount REAL NOT NULL DEFAULT 0,
+  cashier_id TEXT,
+  cashier_name TEXT,
+  device_id TEXT,
+  message TEXT NOT NULL,
+  seen_by_admin INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Indexes for Fast Lookup & Sync
 CREATE INDEX IF NOT EXISTS idx_d1_products_item_code ON products(item_code);
 CREATE INDEX IF NOT EXISTS idx_d1_invoices_invoice_number ON invoices(invoice_number);
@@ -173,3 +168,6 @@ CREATE INDEX IF NOT EXISTS idx_d1_invoice_items_invoice ON invoice_items(invoice
 CREATE INDEX IF NOT EXISTS idx_d1_stock_movements_product ON stock_movements(product_id);
 CREATE INDEX IF NOT EXISTS idx_d1_sales_returns_invoice ON sales_returns(original_invoice_id);
 CREATE INDEX IF NOT EXISTS idx_d1_approval_requests_status ON approval_requests(status);
+CREATE INDEX IF NOT EXISTS idx_d1_bill_item_deletions_created ON bill_item_deletions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_d1_bill_item_deletions_bill ON bill_item_deletions(bill_reference);
+CREATE INDEX IF NOT EXISTS idx_d1_bill_item_deletions_admin_seen ON bill_item_deletions(seen_by_admin, created_at DESC);

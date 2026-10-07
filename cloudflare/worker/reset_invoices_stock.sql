@@ -1,5 +1,5 @@
 -- Clear sales/history tables and permanently remove archived products.
--- Keeps: active products, categories, sub_categories, users, system_settings, devices.
+-- Keeps: active products, users, system_settings, devices.
 
 DELETE FROM sales_return_items;
 DELETE FROM sales_returns;

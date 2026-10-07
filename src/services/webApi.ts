@@ -43,8 +43,11 @@ export async function webApiInvoke(channel: string, payload?: any): Promise<any>
       return fetchJson(`${url}/api/users`, { method: 'POST', body: JSON.stringify(payload) });
     case 'users:update':
       return fetchJson(`${url}/api/users/${payload.id}`, { method: 'PUT', body: JSON.stringify(payload) });
-    case 'users:list':
-      return fetchJson(`${url}/api/users`);
+    case 'users:list': {
+      const role = typeof payload === 'string' ? payload : payload?.requesterRole;
+      const qs = role ? `?requesterRole=${encodeURIComponent(role)}` : '';
+      return fetchJson(`${url}/api/users${qs}`);
+    }
     case 'users:get':
       return fetchJson(`${url}/api/users/${payload.id}`);
 
@@ -65,22 +68,6 @@ export async function webApiInvoke(channel: string, payload?: any): Promise<any>
       return fetchJson(`${url}/api/products/search?q=${encodeURIComponent(payload.query || '')}`);
     case 'products:getByItemCode':
       return fetchJson(`${url}/api/products/code/${encodeURIComponent(payload.itemCode || '')}`);
-
-    // ─── CATEGORIES & SUB-CATEGORIES ───
-    case 'categories:create':
-      return fetchJson(`${url}/api/categories`, { method: 'POST', body: JSON.stringify(payload) });
-    case 'categories:update':
-      return fetchJson(`${url}/api/categories/${payload.id}`, { method: 'PUT', body: JSON.stringify(payload) });
-    case 'categories:list':
-      return fetchJson(`${url}/api/categories`);
-    case 'subcategories:create':
-      return fetchJson(`${url}/api/subcategories`, { method: 'POST', body: JSON.stringify(payload) });
-    case 'subcategories:update':
-      return fetchJson(`${url}/api/subcategories/${payload.id}`, { method: 'PUT', body: JSON.stringify(payload) });
-    case 'subcategories:list': {
-      const catId = payload?.categoryId ? `?categoryId=${encodeURIComponent(payload.categoryId)}` : '';
-      return fetchJson(`${url}/api/subcategories${catId}`);
-    }
 
     // ─── INVOICES ───
     case 'invoices:create':
@@ -149,6 +136,22 @@ export async function webApiInvoke(channel: string, payload?: any): Promise<any>
       return fetchJson(`${url}/api/approvals/${payload.requestId}`, { method: 'PUT', body: JSON.stringify(payload) });
     case 'approval:verifyAdmin':
       return fetchJson(`${url}/api/approvals/verify-admin`, { method: 'POST', body: JSON.stringify(payload) });
+
+    case 'billDeletion:create':
+      return fetchJson(`${url}/api/bill-deletions`, { method: 'POST', body: JSON.stringify(payload) });
+    case 'billDeletion:list': {
+      const params = new URLSearchParams();
+      if (payload?.limit) params.set('limit', String(payload.limit));
+      if (payload?.billReference) params.set('billReference', payload.billReference);
+      if (payload?.cashierId) params.set('cashierId', payload.cashierId);
+      if (payload?.unseenByAdminOnly) params.set('unseenByAdminOnly', '1');
+      const qs = params.toString();
+      return fetchJson(`${url}/api/bill-deletions${qs ? `?${qs}` : ''}`);
+    }
+    case 'billDeletion:markAdminSeen':
+      return fetchJson(`${url}/api/bill-deletions/mark-seen`, { method: 'POST', body: JSON.stringify(payload || {}) });
+    case 'billDeletion:countUnseenAdmin':
+      return fetchJson(`${url}/api/bill-deletions/unseen-count`);
 
     default:
       console.warn(`[Web API] Unhandled channel: ${channel}`);

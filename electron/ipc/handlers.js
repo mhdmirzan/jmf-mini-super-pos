@@ -7,7 +7,6 @@ const { getDatabase } = require('../../database/connection');
 const { AuthRepository } = require('../../database/repositories/auth');
 const { UserRepository } = require('../../database/repositories/users');
 const { ProductRepository } = require('../../database/repositories/products');
-const { CategoryRepository } = require('../../database/repositories/categories');
 const { InvoiceRepository } = require('../../database/repositories/invoices');
 const { ReturnsRepository } = require('../../database/repositories/returns');
 const { StockRepository } = require('../../database/repositories/stock');
@@ -15,6 +14,7 @@ const { SettingsRepository } = require('../../database/repositories/settings');
 const { AuditRepository } = require('../../database/repositories/audit');
 const { ReportsRepository } = require('../../database/repositories/reports');
 const { ApprovalRepository } = require('../../database/repositories/approvals');
+const { BillDeletionsRepository } = require('../../database/repositories/billDeletions');
 const { v4: uuidv4 } = require('uuid');
 const { app } = require('electron');
 const path = require('path');
@@ -25,7 +25,6 @@ function registerIpcHandlers(ipcMain, syncService = null) {
   const auth = new AuthRepository(db);
   const users = new UserRepository(db);
   const products = new ProductRepository(db);
-  const categories = new CategoryRepository(db);
   const invoices = new InvoiceRepository(db);
   const returns = new ReturnsRepository(db);
   const stock = new StockRepository(db);
@@ -33,6 +32,7 @@ function registerIpcHandlers(ipcMain, syncService = null) {
   const audit = new AuditRepository(db);
   const reports = new ReportsRepository(db);
   const approvals = new ApprovalRepository(db);
+  const billDeletions = new BillDeletionsRepository(db);
 
   // ─── AUTH ───
   ipcMain.handle('auth:login', async (_event, { username, password }) => {
@@ -148,55 +148,6 @@ function registerIpcHandlers(ipcMain, syncService = null) {
   ipcMain.handle('products:getByItemCode', async (_event, { itemCode }) => {
     try {
       return products.getByItemCode(itemCode);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  // ─── CATEGORIES ───
-  ipcMain.handle('categories:create', async (_event, data) => {
-    try {
-      return categories.createCategory(data);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('categories:update', async (_event, data) => {
-    try {
-      return categories.updateCategory(data);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('categories:list', async () => {
-    try {
-      return categories.listCategories();
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('subcategories:create', async (_event, data) => {
-    try {
-      return categories.createSubCategory(data);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('subcategories:update', async (_event, data) => {
-    try {
-      return categories.updateSubCategory(data);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('subcategories:list', async (_event, { categoryId } = {}) => {
-    try {
-      return categories.listSubCategories(categoryId);
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -457,6 +408,43 @@ function registerIpcHandlers(ipcMain, syncService = null) {
       return approvals.verifyAdmin(credentials);
     } catch (error) {
       console.error('[IPC] approval:verifyAdmin error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // ─── BILL ITEM DELETIONS (POS notifications) ───
+  ipcMain.handle('billDeletion:create', async (_event, payload) => {
+    try {
+      return billDeletions.create(payload);
+    } catch (error) {
+      console.error('[IPC] billDeletion:create error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('billDeletion:list', async (_event, filters) => {
+    try {
+      return billDeletions.list(filters || {});
+    } catch (error) {
+      console.error('[IPC] billDeletion:list error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('billDeletion:markAdminSeen', async (_event, payload) => {
+    try {
+      return billDeletions.markAdminSeen(payload || {});
+    } catch (error) {
+      console.error('[IPC] billDeletion:markAdminSeen error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('billDeletion:countUnseenAdmin', async () => {
+    try {
+      return billDeletions.countUnseenAdmin();
+    } catch (error) {
+      console.error('[IPC] billDeletion:countUnseenAdmin error:', error);
       return { success: false, error: error.message };
     }
   });

@@ -32,13 +32,6 @@ const VALID_CHANNELS = {
     'products:get',
     'products:search',
     'products:getByItemCode',
-    // Categories
-    'categories:create',
-    'categories:update',
-    'categories:list',
-    'subcategories:create',
-    'subcategories:update',
-    'subcategories:list',
     // Invoices
     'invoices:create',
     'invoices:cancel',
@@ -65,6 +58,17 @@ const VALID_CHANNELS = {
     'printer:printReceipt',
     // Audit
     'audit:list',
+    // Approvals
+    'approval:create',
+    'approval:getPending',
+    'approval:check',
+    'approval:respond',
+    'approval:verifyAdmin',
+    // Bill item deletions
+    'billDeletion:create',
+    'billDeletion:list',
+    'billDeletion:markAdminSeen',
+    'billDeletion:countUnseenAdmin',
     // Reports
     'reports:dailySales',
     'reports:monthlySales',

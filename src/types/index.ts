@@ -14,8 +14,6 @@ export interface User {
 export interface Product {
   id: string;
   item_code: string;
-  category_id: string | null;
-  sub_category_id: string | null;
   item_name: string;
   unit?: 'PCS' | 'KG' | string;
   quantity: number;
@@ -25,29 +23,9 @@ export interface Product {
   retail_discount: number;
   wholesale_price: number;
   is_active: number;
-  category_name?: string;
-  sub_category_name?: string;
   created_at?: string;
   updated_at?: string;
   version?: number;
-}
-
-export interface Category {
-  id: string;
-  name: string;
-  product_count?: number;
-  sub_category_count?: number;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface SubCategory {
-  id: string;
-  category_id: string;
-  name: string;
-  category_name?: string;
-  created_at?: string;
-  updated_at?: string;
 }
 
 export interface CartItem {
@@ -58,6 +36,24 @@ export interface CartItem {
   unitDiscount: number;
   discount: number;
   amount: number;
+}
+
+export interface BillItemDeletion {
+  id: string;
+  bill_reference: string;
+  product_id?: string | null;
+  product_name: string;
+  item_code?: string | null;
+  quantity: number;
+  unit?: string | null;
+  unit_price: number;
+  line_amount: number;
+  cashier_id?: string | null;
+  cashier_name?: string | null;
+  device_id?: string | null;
+  message: string;
+  seen_by_admin: number;
+  created_at: string;
 }
 
 export interface Invoice {
@@ -118,7 +114,6 @@ export interface SalesReturnItem {
   product_id: string;
   item_code: string;
   item_name: string;
-  category_id: string | null;
   sales_price: number;
   quantity: number;
   reason: string;

@@ -21,36 +21,11 @@ function up(db) {
     )
   `);
 
-  // ─── CATEGORIES ───
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS categories (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  // ─── SUB CATEGORIES ───
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sub_categories (
-      id TEXT PRIMARY KEY,
-      category_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (category_id) REFERENCES categories(id),
-      UNIQUE(category_id, name)
-    )
-  `);
-
   // ─── PRODUCTS ───
   db.exec(`
     CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,
       item_code TEXT NOT NULL UNIQUE,
-      category_id TEXT,
-      sub_category_id TEXT,
       item_name TEXT NOT NULL,
       quantity REAL NOT NULL DEFAULT 0,
       minimum_quantity REAL NOT NULL DEFAULT 0,
@@ -62,9 +37,7 @@ function up(db) {
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      version INTEGER NOT NULL DEFAULT 1,
-      FOREIGN KEY (category_id) REFERENCES categories(id),
-      FOREIGN KEY (sub_category_id) REFERENCES sub_categories(id)
+      version INTEGER NOT NULL DEFAULT 1
     )
   `);
 
@@ -137,7 +110,6 @@ function up(db) {
       product_id TEXT NOT NULL,
       item_code TEXT NOT NULL,
       item_name TEXT NOT NULL,
-      category_id TEXT,
       sales_price REAL NOT NULL,
       quantity REAL NOT NULL,
       reason TEXT,
@@ -222,7 +194,6 @@ function up(db) {
   // ─── INDEXES ───
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_products_item_code ON products(item_code);
-    CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
     CREATE INDEX IF NOT EXISTS idx_products_is_active ON products(is_active);
     CREATE INDEX IF NOT EXISTS idx_invoices_invoice_number ON invoices(invoice_number);
     CREATE INDEX IF NOT EXISTS idx_invoices_cashier ON invoices(cashier_id);
@@ -242,7 +213,6 @@ function up(db) {
     CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
     CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
-    CREATE INDEX IF NOT EXISTS idx_sub_categories_category ON sub_categories(category_id);
   `);
 
   try {
@@ -266,7 +236,7 @@ function up(db) {
       'INSERT INTO system_settings (id, setting_key, setting_value) VALUES (?, ?, ?)'
     );
     insertSetting.run(uuidv4(), 'MAX_USERS', '5');
-    insertSetting.run(uuidv4(), 'SHOP_NAME', 'Mini Super');
+    insertSetting.run(uuidv4(), 'SHOP_NAME', 'Your Store');
     insertSetting.run(uuidv4(), 'SHOP_ADDRESS', '');
     insertSetting.run(uuidv4(), 'SHOP_PHONE', '');
     insertSetting.run(uuidv4(), 'RECEIPT_FOOTER', 'Thank you for shopping with us!');

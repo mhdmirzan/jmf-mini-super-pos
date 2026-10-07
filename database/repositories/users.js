@@ -1,10 +1,40 @@
 /**
  * Users Repository - CRUD operations for users.
  * Enforces MAX_USERS limit from system_settings and role assignments.
+ *
+ * Password change rules:
+ * - SUPER_ADMIN: own password, plus ADMIN and CASHIER passwords
+ * - ADMIN: CASHIER passwords only
  */
 
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
+
+function normalizeRole(role) {
+  return String(role || '').toUpperCase().trim();
+}
+
+function canManageUsersFully(requesterRole) {
+  return normalizeRole(requesterRole) === 'SUPER_ADMIN';
+}
+
+function canChangePassword(requesterRole, requesterId, targetUser) {
+  const role = normalizeRole(requesterRole);
+  const targetRole = normalizeRole(targetUser.role);
+
+  if (role === 'SUPER_ADMIN') {
+    if (targetRole === 'SUPER_ADMIN') {
+      return Boolean(requesterId) && String(requesterId) === String(targetUser.id);
+    }
+    return targetRole === 'ADMIN' || targetRole === 'CASHIER';
+  }
+
+  if (role === 'ADMIN') {
+    return targetRole === 'CASHIER';
+  }
+
+  return false;
+}
 
 class UserRepository {
   constructor(db) {
@@ -16,7 +46,7 @@ class UserRepository {
    * Case-insensitive unique usernames and uppercase role enforcement.
    */
   create({ username, password, fullName, role, createdBy, requesterRole }) {
-    if (requesterRole && String(requesterRole).toUpperCase() !== 'SUPER_ADMIN') {
+    if (!canManageUsersFully(requesterRole)) {
       return { success: false, error: 'Access denied: Only Super Admin accounts can create users.' };
     }
     if (!username || !password || !fullName) {
@@ -80,15 +110,62 @@ class UserRepository {
    * Update a user (supports editing username, full name, role, active status, password).
    */
   update({ id, username, fullName, role, isActive, password, updatedBy, requesterRole }) {
-    if (requesterRole && String(requesterRole).toUpperCase() !== 'SUPER_ADMIN') {
-      return { success: false, error: 'Access denied: Only Super Admin accounts can edit users.' };
-    }
+    const requester = normalizeRole(requesterRole);
     const user = this.db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     if (!user) {
       return { success: false, error: 'User not found.' };
     }
 
-    // Update username if supplied and changed
+    // Admin: password change for cashiers only
+    if (requester === 'ADMIN') {
+      if (!canChangePassword(requesterRole, updatedBy, user)) {
+        return { success: false, error: 'Access denied: Admin can only change cashier passwords.' };
+      }
+      if (!password || String(password).trim() === '') {
+        return { success: false, error: 'New password is required.' };
+      }
+      // Ignore any non-password fields for admin
+      const passwordHash = bcrypt.hashSync(String(password), 10);
+      this.db.prepare(
+        "UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(passwordHash, id);
+
+      try {
+        this.db.prepare(
+          "INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))"
+        ).run(
+          uuidv4(),
+          updatedBy || id,
+          'USER_PASSWORD_CHANGED',
+          'USER',
+          id,
+          JSON.stringify({ username: user.username, by: 'ADMIN' })
+        );
+      } catch (auditErr) {
+        console.warn('[Users] Audit log write warning:', auditErr);
+      }
+
+      return { success: true };
+    }
+
+    if (requester && requester !== 'SUPER_ADMIN') {
+      return { success: false, error: 'Access denied.' };
+    }
+
+    // Super Admin: password changes limited to self / admin / cashier
+    if (password && String(password).trim() !== '') {
+      if (!canChangePassword(requesterRole || 'SUPER_ADMIN', updatedBy, user)) {
+        return { success: false, error: 'Access denied: Super Admin can only change own, Admin, or Cashier passwords.' };
+      }
+    }
+
+    // Super Admin editing other Super Admins (non-self): block profile edits too except none
+    const targetRole = normalizeRole(user.role);
+    if (targetRole === 'SUPER_ADMIN' && updatedBy && String(updatedBy) !== String(user.id)) {
+      return { success: false, error: 'Access denied: Cannot modify another Super Admin account.' };
+    }
+
+    // If this is password-only from UI for self/admin/cashier, still allow other fields for super admin on admin/cashier
     if (username !== undefined && username.trim() !== '') {
       const cleanUsername = String(username).trim().toLowerCase().replace(/\s+/g, '');
       const existing = this.db.prepare(
@@ -159,6 +236,7 @@ class UserRepository {
           username: username || user.username,
           fullName: fullName !== undefined ? fullName : user.full_name,
           role: role !== undefined ? role : user.role,
+          passwordChanged: !!(password && String(password).trim()),
         })
       );
     } catch (auditErr) {
@@ -169,15 +247,27 @@ class UserRepository {
   }
 
   /**
-   * List all users (excluding password hash).
+   * List users (excluding password hash).
+   * Super Admin: all users. Admin: cashiers only.
    */
   list(requesterRole) {
-    if (requesterRole && String(requesterRole).toUpperCase() !== 'SUPER_ADMIN') {
-      return { success: false, error: 'Access denied: Only Super Admin accounts can view user accounts.' };
+    const role = normalizeRole(requesterRole);
+    if (role !== 'SUPER_ADMIN' && role !== 'ADMIN') {
+      return { success: false, error: 'Access denied.' };
     }
-    const users = this.db.prepare(
-      'SELECT id, username, full_name, role, is_active, created_at, updated_at FROM users ORDER BY created_at DESC'
-    ).all();
+
+    let users;
+    if (role === 'ADMIN') {
+      users = this.db.prepare(
+        `SELECT id, username, full_name, role, is_active, created_at, updated_at
+         FROM users WHERE UPPER(TRIM(role)) = 'CASHIER'
+         ORDER BY created_at DESC`
+      ).all();
+    } else {
+      users = this.db.prepare(
+        'SELECT id, username, full_name, role, is_active, created_at, updated_at FROM users ORDER BY created_at DESC'
+      ).all();
+    }
 
     return {
       success: true,
@@ -210,4 +300,4 @@ class UserRepository {
   }
 }
 
-module.exports = { UserRepository };
+module.exports = { UserRepository, canChangePassword };

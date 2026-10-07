@@ -36,13 +36,13 @@ const menuItems: MenuItem[] = [
     ),
   },
   {
-    title: 'Categories',
-    subtitle: 'Supermarket departments & sub-category organization',
-    path: '/categories',
+    title: 'Bill Item Deletions',
+    subtitle: 'Notifications when cashiers remove lines from open bills',
+    path: '/bill-deletions',
     roles: ['SUPER_ADMIN', 'ADMIN'],
     icon: (
       <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
       </svg>
     ),
   },
@@ -80,8 +80,19 @@ const menuItems: MenuItem[] = [
     ),
   },
   {
+    title: 'Users & Passwords',
+    subtitle: 'Accounts and password changes by role',
+    path: '/users',
+    roles: ['SUPER_ADMIN', 'ADMIN'],
+    icon: (
+      <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+      </svg>
+    ),
+  },
+  {
     title: 'Settings & Terminal',
-    subtitle: 'Store branding, receipt layout, hardware & user accounts',
+    subtitle: 'Set this shop’s name, receipt layout & terminal options (Admin only)',
     path: '/settings',
     roles: ['SUPER_ADMIN', 'ADMIN'],
     icon: (
@@ -105,51 +116,46 @@ export default function MenuPage() {
   return (
     <div className="flex-1 flex flex-col justify-center items-center p-6 sm:p-8 select-none bg-[var(--pos-bg)] overflow-y-auto">
       {/* Top Banner */}
-      <div className="max-w-5xl w-full mx-auto mb-6 text-center">
-        <div className="flex flex-col items-center justify-center gap-2 border-b border-[var(--pos-border)] pb-4">
+      <div className="max-w-5xl w-full mx-auto mb-14 text-center">
+        <div className="flex flex-col items-center justify-center gap-2 pb-6">
           <div>
-            <h1 className="text-xl sm:text-2xl font-bold text-[var(--pos-text)] tracking-tight">
+            <h1 className="text-2xl sm:text-2xl font-bold text-[var(--pos-text)] tracking-tight">
               Main Menu
             </h1>
-            <p className="text-xs text-[var(--pos-text-muted)] mt-1">
+            <p className="text-s text-[var(--pos-text-muted)] mt-1">
               Select a section to begin. You can return to this menu at any time using the Back button.
             </p>
           </div>
 
-          <div className="flex items-center justify-center gap-2 mt-1">
-            <span className="text-xs px-2.5 py-1 rounded bg-[var(--pos-bg-subtle)] text-[var(--pos-text-muted)] font-mono border border-[var(--pos-border)]">
-              Terminal: POS-01
-            </span>
-          </div>
         </div>
       </div>
 
-      {/* Grid of the 7 Boxes - Centered Grid & Centered Card Content */}
-      <div className="max-w-5xl w-full mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 justify-center">
+      {/* 3×3 matrix grid — wider, shorter cards */}
+      <div className="max-w-5xl w-full mx-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
         {accessibleItems.map((item) => (
           <button
             key={item.path}
             type="button"
             onClick={() => navigate(item.path)}
-            className="pos-card p-6 text-center flex flex-col items-center justify-between min-h-[180px] cursor-pointer transition-all hover:border-[var(--pos-primary)] hover:shadow-md active:scale-[0.98] group bg-white border border-[var(--pos-border)] rounded-xl relative"
+            className="pos-card px-5 py-4 text-center flex flex-col items-center justify-center min-h-[140px] h-[150px] cursor-pointer transition-all hover:border-[var(--pos-primary)] hover:shadow-md active:scale-[0.98] group bg-white border border-[var(--pos-border)] rounded-xl relative"
           >
             {item.shortcut && (
-              <span className="absolute top-3 right-3 text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--pos-bg-subtle)] text-[var(--pos-text-muted)] border border-[var(--pos-border)]">
+              <span className="absolute top-2.5 right-2.5 text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--pos-bg-subtle)] text-[var(--pos-text-muted)] border border-[var(--pos-border)]">
                 {item.shortcut}
               </span>
             )}
 
             <div className="flex flex-col items-center w-full">
-              <div className="w-14 h-14 rounded-xl bg-[var(--pos-bg-subtle)] group-hover:bg-slate-900 text-slate-800 group-hover:text-white flex items-center justify-center transition-colors mb-3 shadow-xs">
+              <div className="w-11 h-11 rounded-lg bg-[var(--pos-bg-subtle)] group-hover:bg-slate-900 text-slate-800 group-hover:text-white flex items-center justify-center transition-colors mb-2 shadow-xs [&>svg]:w-6 [&>svg]:h-6">
                 {item.icon}
               </div>
 
-              <h2 className="text-base font-bold text-[var(--pos-text)] group-hover:text-slate-900 transition-colors">
+              <h2 className="text-sm font-bold text-[var(--pos-text)] group-hover:text-slate-900 transition-colors">
                 {item.title}
               </h2>
             </div>
 
-            <p className="text-xs text-[var(--pos-text-muted)] mt-2 leading-relaxed text-center">
+            <p className="text-[11px] text-[var(--pos-text-muted)] mt-1.5 leading-snug text-center line-clamp-2">
               {item.subtitle}
             </p>
           </button>

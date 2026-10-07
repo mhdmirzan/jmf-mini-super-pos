@@ -79,25 +79,7 @@ export default {
         return deleteProduct(id, env);
       }
 
-      // 6. CATEGORIES & SUB-CATEGORIES API
-      if (path === '/api/categories') {
-        if (method === 'GET') return getCategories(env);
-        if (method === 'POST') return createCategory(request, env);
-      }
-      if (path.startsWith('/api/categories/') && method === 'PUT') {
-        const id = path.replace('/api/categories/', '');
-        return updateCategory(id, request, env);
-      }
-      if (path === '/api/subcategories') {
-        if (method === 'GET') return getSubCategories(request, env);
-        if (method === 'POST') return createSubCategory(request, env);
-      }
-      if (path.startsWith('/api/subcategories/') && method === 'PUT') {
-        const id = path.replace('/api/subcategories/', '');
-        return updateSubCategory(id, request, env);
-      }
-
-      // 7. INVOICES API
+      // 6. INVOICES API
       if (path === '/api/invoices') {
         if (method === 'GET') return getInvoices(request, env);
         if (method === 'POST') return createInvoice(request, env);
@@ -169,6 +151,18 @@ export default {
         return respondApprovalRequest(id, request, env);
       }
 
+      // 13. BILL ITEM DELETIONS (POS notifications)
+      if (path === '/api/bill-deletions') {
+        if (method === 'GET') return listBillItemDeletions(request, env);
+        if (method === 'POST') return createBillItemDeletion(request, env);
+      }
+      if (path === '/api/bill-deletions/mark-seen' && method === 'POST') {
+        return markBillDeletionsAdminSeen(request, env);
+      }
+      if (path === '/api/bill-deletions/unseen-count' && method === 'GET') {
+        return countUnseenBillDeletions(env);
+      }
+
       return jsonResponse({ error: 'Endpoint not found' }, 404);
     } catch (err) {
       console.error('[Worker Error]', err);
@@ -237,18 +231,53 @@ async function handleVerify(request, env) {
 }
 
 // ─── USERS HANDLERS ───
+function normalizeUserRole(role) {
+  return String(role || '').toUpperCase().trim();
+}
+
+function canChangeUserPassword(requesterRole, requesterId, targetUser) {
+  const role = normalizeUserRole(requesterRole);
+  const targetRole = normalizeUserRole(targetUser.role);
+  if (role === 'SUPER_ADMIN') {
+    if (targetRole === 'SUPER_ADMIN') {
+      return Boolean(requesterId) && String(requesterId) === String(targetUser.id);
+    }
+    return targetRole === 'ADMIN' || targetRole === 'CASHIER';
+  }
+  if (role === 'ADMIN') {
+    return targetRole === 'CASHIER';
+  }
+  return false;
+}
+
 async function getUsers(request, env) {
   const url = new URL(request.url);
   const activeOnly = url.searchParams.get('activeOnly') === 'true';
+  const requesterRole = normalizeUserRole(url.searchParams.get('requesterRole'));
 
   let query = 'SELECT id, username, full_name, role, is_active, created_at FROM users';
+  const conditions = [];
   if (activeOnly) {
-    query += ' WHERE is_active = 1';
+    conditions.push('is_active = 1');
+  }
+  if (requesterRole === 'ADMIN') {
+    conditions.push("UPPER(TRIM(role)) = 'CASHIER'");
+  } else if (requesterRole && requesterRole !== 'SUPER_ADMIN') {
+    return jsonResponse({ success: false, error: 'Access denied.' }, 403);
+  }
+  if (conditions.length > 0) {
+    query += ' WHERE ' + conditions.join(' AND ');
   }
   query += ' ORDER BY full_name ASC';
 
   const result = await env.DB.prepare(query).all();
-  return jsonResponse({ success: true, users: result.results });
+  return jsonResponse({
+    success: true,
+    users: (result.results || []).map((u) => ({
+      ...u,
+      role: normalizeUserRole(u.role || 'CASHIER'),
+    })),
+  });
 }
 
 async function getUser(id, env) {
@@ -258,7 +287,11 @@ async function getUser(id, env) {
 }
 
 async function createUser(request, env) {
-  const { username, password, fullName, role, createdBy } = await request.json();
+  const body = await request.json();
+  const { username, password, fullName, role, createdBy, requesterRole } = body;
+  if (normalizeUserRole(requesterRole) !== 'SUPER_ADMIN') {
+    return jsonResponse({ success: false, error: 'Access denied: Only Super Admin can create users.' }, 403);
+  }
   if (!username || !password || !fullName || !role) {
     return jsonResponse({ success: false, error: 'All fields are required.' }, 400);
   }
@@ -290,7 +323,43 @@ async function createUser(request, env) {
 }
 
 async function updateUser(id, request, env) {
-  const { fullName, role, isActive, password } = await request.json();
+  const body = await request.json();
+  const { fullName, role, isActive, password, username, updatedBy, requesterRole } = body;
+  const reqRole = normalizeUserRole(requesterRole);
+
+  const target = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
+  if (!target) {
+    return jsonResponse({ success: false, error: 'User not found' }, 404);
+  }
+
+  if (reqRole === 'ADMIN') {
+    if (!canChangeUserPassword(reqRole, updatedBy, target)) {
+      return jsonResponse({ success: false, error: 'Access denied: Admin can only change cashier passwords.' }, 403);
+    }
+    if (!password || !String(password).trim()) {
+      return jsonResponse({ success: false, error: 'New password is required.' }, 400);
+    }
+    const passwordHash = bcrypt.hashSync(String(password), 10);
+    await env.DB.prepare(`
+      UPDATE users SET password_hash = ?, updated_at = datetime('now'), version = version + 1 WHERE id = ?
+    `).bind(passwordHash, id).run();
+    return jsonResponse({ success: true });
+  }
+
+  if (reqRole && reqRole !== 'SUPER_ADMIN') {
+    return jsonResponse({ success: false, error: 'Access denied.' }, 403);
+  }
+
+  if (password && String(password).trim()) {
+    if (!canChangeUserPassword(reqRole || 'SUPER_ADMIN', updatedBy, target)) {
+      return jsonResponse({ success: false, error: 'Access denied: cannot change this user password.' }, 403);
+    }
+  }
+
+  const targetRole = normalizeUserRole(target.role);
+  if (targetRole === 'SUPER_ADMIN' && updatedBy && String(updatedBy) !== String(target.id)) {
+    return jsonResponse({ success: false, error: 'Access denied: Cannot modify another Super Admin.' }, 403);
+  }
 
   if (password && String(password).trim()) {
     const passwordHash = bcrypt.hashSync(password, 10);
@@ -299,21 +368,36 @@ async function updateUser(id, request, env) {
         full_name = COALESCE(?, full_name),
         role = COALESCE(?, role),
         is_active = COALESCE(?, is_active),
+        username = COALESCE(?, username),
         password_hash = ?,
         updated_at = datetime('now'),
         version = version + 1
       WHERE id = ?
-    `).bind(fullName || null, role || null, isActive !== undefined ? (isActive ? 1 : 0) : null, passwordHash, id).run();
+    `).bind(
+      fullName || null,
+      role || null,
+      isActive !== undefined ? (isActive ? 1 : 0) : null,
+      username || null,
+      passwordHash,
+      id
+    ).run();
   } else {
     await env.DB.prepare(`
       UPDATE users SET
         full_name = COALESCE(?, full_name),
         role = COALESCE(?, role),
         is_active = COALESCE(?, is_active),
+        username = COALESCE(?, username),
         updated_at = datetime('now'),
         version = version + 1
       WHERE id = ?
-    `).bind(fullName || null, role || null, isActive !== undefined ? (isActive ? 1 : 0) : null, id).run();
+    `).bind(
+      fullName || null,
+      role || null,
+      isActive !== undefined ? (isActive ? 1 : 0) : null,
+      username || null,
+      id
+    ).run();
   }
 
   return jsonResponse({ success: true });
@@ -323,31 +407,16 @@ async function updateUser(id, request, env) {
 async function getProducts(request, env) {
   const url = new URL(request.url);
   const isActive = url.searchParams.get('isActive');
-  const categoryId = url.searchParams.get('categoryId');
-  const subCategoryId = url.searchParams.get('subCategoryId');
   const search = url.searchParams.get('search');
   const lowStock = url.searchParams.get('lowStock') === 'true';
 
-  let query = `
-    SELECT p.*, c.name as category_name, sc.name as sub_category_name
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.id
-    LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-  `;
+  let query = 'SELECT p.* FROM products p';
   const conditions = [];
   const params = [];
 
   if (isActive !== null && isActive !== undefined) {
     conditions.push('p.is_active = ?');
     params.push(isActive === 'true' || isActive === '1' ? 1 : 0);
-  }
-  if (categoryId) {
-    conditions.push('p.category_id = ?');
-    params.push(categoryId);
-  }
-  if (subCategoryId) {
-    conditions.push('p.sub_category_id = ?');
-    params.push(subCategoryId);
   }
   if (search && search.trim()) {
     conditions.push('(p.item_code LIKE ? OR p.item_name LIKE ?)');
@@ -371,13 +440,7 @@ async function getProducts(request, env) {
 }
 
 async function getProduct(id, env) {
-  const product = await env.DB.prepare(`
-    SELECT p.*, c.name as category_name, sc.name as sub_category_name
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.id
-    LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-    WHERE p.id = ?
-  `).bind(id).first();
+  const product = await env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(id).first();
 
   if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
   return jsonResponse({ success: true, product });
@@ -390,15 +453,12 @@ async function searchProducts(request, env) {
 
   const term = `%${q.trim()}%`;
   const result = await env.DB.prepare(`
-    SELECT p.*, c.name as category_name, sc.name as sub_category_name
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.id
-    LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-    WHERE p.is_active = 1 AND (
-      p.item_code LIKE ? OR
-      p.item_name LIKE ?
+    SELECT * FROM products
+    WHERE is_active = 1 AND (
+      item_code LIKE ? OR
+      item_name LIKE ?
     )
-    ORDER BY p.item_name ASC
+    ORDER BY item_name ASC
     LIMIT 50
   `).bind(term, term).all();
 
@@ -407,11 +467,8 @@ async function searchProducts(request, env) {
 
 async function getProductByItemCode(code, env) {
   const product = await env.DB.prepare(`
-    SELECT p.*, c.name as category_name, sc.name as sub_category_name
-    FROM products p
-    LEFT JOIN categories c ON p.category_id = c.id
-    LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-    WHERE p.item_code = ? AND p.is_active = 1
+    SELECT * FROM products
+    WHERE item_code = ? AND is_active = 1
   `).bind(code).first();
 
   if (!product) return jsonResponse({ success: false, error: 'Product not found' }, 404);
@@ -428,14 +485,12 @@ async function createProduct(request, env) {
 
   await env.DB.prepare(`
     INSERT INTO products (
-      id, item_code, category_id, sub_category_id, item_name,
+      id, item_code, item_name,
       unit, quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price,
       is_active, created_at, updated_at, version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'), 1)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'), 1)
     ON CONFLICT(id) DO UPDATE SET
       item_code = excluded.item_code,
-      category_id = excluded.category_id,
-      sub_category_id = excluded.sub_category_id,
       item_name = excluded.item_name,
       unit = excluded.unit,
       quantity = excluded.quantity,
@@ -447,8 +502,7 @@ async function createProduct(request, env) {
       updated_at = datetime('now'),
       version = products.version + 1
   `).bind(
-    id, data.itemCode, data.categoryId || null, data.subCategoryId || null,
-    data.itemName, unit, qty, data.minimumQuantity || 0, data.cost || 0,
+    id, data.itemCode, data.itemName, unit, qty, data.minimumQuantity || 0, data.cost || 0,
     data.retailPrice || 0, data.retailDiscount || 0, data.wholesalePrice || 0
   ).run();
 
@@ -502,64 +556,6 @@ async function deleteProduct(id, env) {
   }
 
   await env.DB.prepare('DELETE FROM products WHERE id = ?').bind(id).run();
-  return jsonResponse({ success: true });
-}
-
-// ─── CATEGORIES & SUBCATEGORIES ───
-async function getCategories(env) {
-  const cats = await env.DB.prepare('SELECT * FROM categories ORDER BY name ASC').all();
-  const subs = await env.DB.prepare('SELECT * FROM sub_categories ORDER BY name ASC').all();
-  const byCat = {};
-  for (const sub of (subs.results || [])) {
-    if (!byCat[sub.category_id]) byCat[sub.category_id] = [];
-    byCat[sub.category_id].push(sub);
-  }
-  const categories = (cats.results || []).map((c) => ({
-    ...c,
-    sub_categories: byCat[c.id] || [],
-  }));
-  return jsonResponse({ success: true, categories });
-}
-
-async function createCategory(request, env) {
-  const { id: providedId, name } = await request.json();
-  const id = providedId || crypto.randomUUID();
-  await env.DB.prepare('INSERT OR IGNORE INTO categories (id, name) VALUES (?, ?)').bind(id, name).run();
-  return jsonResponse({ success: true, id });
-}
-
-async function updateCategory(id, request, env) {
-  const { name } = await request.json();
-  await env.DB.prepare("UPDATE categories SET name = ?, updated_at = datetime('now') WHERE id = ?").bind(name, id).run();
-  return jsonResponse({ success: true });
-}
-
-async function getSubCategories(request, env) {
-  const url = new URL(request.url);
-  const categoryId = url.searchParams.get('categoryId');
-  let query = 'SELECT * FROM sub_categories';
-  const params = [];
-  if (categoryId) {
-    query += ' WHERE category_id = ?';
-    params.push(categoryId);
-  }
-  query += ' ORDER BY name ASC';
-  const result = params.length > 0
-    ? await env.DB.prepare(query).bind(...params).all()
-    : await env.DB.prepare(query).all();
-  return jsonResponse({ success: true, subCategories: result.results });
-}
-
-async function createSubCategory(request, env) {
-  const { id: providedId, categoryId, name } = await request.json();
-  const id = providedId || crypto.randomUUID();
-  await env.DB.prepare('INSERT OR IGNORE INTO sub_categories (id, category_id, name) VALUES (?, ?, ?)').bind(id, categoryId, name).run();
-  return jsonResponse({ success: true, id });
-}
-
-async function updateSubCategory(id, request, env) {
-  const { name } = await request.json();
-  await env.DB.prepare("UPDATE sub_categories SET name = ?, updated_at = datetime('now') WHERE id = ?").bind(name, id).run();
   return jsonResponse({ success: true });
 }
 
@@ -878,6 +874,27 @@ async function getSettings(request, env) {
 
 async function setSetting(request, env) {
   const { key, value, updatedBy } = await request.json();
+
+  const adminOnlyKeys = [
+    'SHOP_NAME',
+    'SHOP_ADDRESS',
+    'SHOP_PHONE',
+    'RECEIPT_FOOTER',
+    'INVOICE_PREFIX',
+    'RETURN_PREFIX',
+    'MAX_USERS',
+  ];
+
+  if (adminOnlyKeys.includes(key)) {
+    const actor = updatedBy
+      ? await env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(updatedBy).first()
+      : null;
+    const role = String(actor?.role || '').toUpperCase().trim();
+    if (!['ADMIN', 'SUPER_ADMIN', 'SUPERADMIN'].includes(role)) {
+      return jsonResponse({ success: false, error: 'Only Admin can change store settings.' }, 403);
+    }
+  }
+
   const id = crypto.randomUUID();
   await env.DB.prepare(`
     INSERT INTO system_settings (id, setting_key, setting_value, updated_at, updated_by)
@@ -1062,11 +1079,11 @@ async function handleSync(request, env) {
             env.DB.prepare(`
               INSERT OR IGNORE INTO sales_return_items (
                 id, return_id, invoice_item_id, product_id, item_code, item_name,
-                category_id, sales_price, quantity, reason, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sales_price, quantity, reason, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).bind(
               it.id, ret.id, it.invoice_item_id, it.product_id, it.item_code, it.item_name,
-              it.category_id, it.sales_price, it.quantity, it.reason, it.created_at
+              it.sales_price, it.quantity, it.reason, it.created_at
             )
           );
 
@@ -1120,14 +1137,12 @@ async function handleSync(request, env) {
         statements.push(
           env.DB.prepare(`
             INSERT INTO products (
-              id, item_code, category_id, sub_category_id, item_name, unit,
+              id, item_code, item_name, unit,
               quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price,
               is_active, created_at, updated_at, version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               item_code = excluded.item_code,
-              category_id = excluded.category_id,
-              sub_category_id = excluded.sub_category_id,
               item_name = excluded.item_name,
               unit = excluded.unit,
               quantity = excluded.quantity,
@@ -1140,8 +1155,7 @@ async function handleSync(request, env) {
               updated_at = excluded.updated_at,
               version = excluded.version
           `).bind(
-            p.id, p.item_code, p.category_id || null, p.sub_category_id || null,
-            p.item_name, p.unit || 'PCS', p.quantity || 0, p.minimum_quantity || 0, p.cost || 0,
+            p.id, p.item_code, p.item_name, p.unit || 'PCS', p.quantity || 0, p.minimum_quantity || 0, p.cost || 0,
             p.retail_price || 0, p.retail_discount || 0, p.wholesale_price || 0,
             p.is_active != null ? p.is_active : 1,
             p.created_at || new Date().toISOString(),
@@ -1284,6 +1298,146 @@ async function verifyAdminApproval(request, env) {
       role: user.role,
     }
   });
+}
+
+// ─── BILL ITEM DELETIONS ───
+async function ensureBillDeletionsTable(env) {
+  try {
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS bill_item_deletions (
+        id TEXT PRIMARY KEY,
+        bill_reference TEXT NOT NULL,
+        product_id TEXT,
+        product_name TEXT NOT NULL,
+        item_code TEXT,
+        quantity REAL NOT NULL,
+        unit TEXT,
+        unit_price REAL NOT NULL DEFAULT 0,
+        line_amount REAL NOT NULL DEFAULT 0,
+        cashier_id TEXT,
+        cashier_name TEXT,
+        device_id TEXT,
+        message TEXT NOT NULL,
+        seen_by_admin INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `).run();
+  } catch {}
+}
+
+async function createBillItemDeletion(request, env) {
+  try {
+    await ensureBillDeletionsTable(env);
+    const body = await request.json().catch(() => ({}));
+    const id = body.id || crypto.randomUUID();
+    const {
+      billReference,
+      productId,
+      productName,
+      itemCode,
+      quantity,
+      unit,
+      unitPrice,
+      lineAmount,
+      cashierId,
+      cashierName,
+      deviceId,
+      message,
+    } = body;
+
+    if (!billReference || !productName || !message) {
+      return jsonResponse({ success: false, error: 'Missing required fields' }, 400);
+    }
+
+    await env.DB.prepare(`
+      INSERT INTO bill_item_deletions (
+        id, bill_reference, product_id, product_name, item_code,
+        quantity, unit, unit_price, line_amount,
+        cashier_id, cashier_name, device_id, message,
+        seen_by_admin, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+    `).bind(
+      id,
+      billReference,
+      productId || null,
+      productName,
+      itemCode || null,
+      quantity ?? 0,
+      unit || 'PCS',
+      unitPrice ?? 0,
+      lineAmount ?? 0,
+      cashierId || null,
+      cashierName || 'Cashier',
+      deviceId || 'WEB',
+      message
+    ).run();
+
+    return jsonResponse({ success: true, id });
+  } catch (err) {
+    console.error('[createBillItemDeletion error]', err);
+    return jsonResponse({ success: false, error: err.message }, 500);
+  }
+}
+
+async function listBillItemDeletions(request, env) {
+  await ensureBillDeletionsTable(env);
+  const url = new URL(request.url);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 500);
+  const billReference = url.searchParams.get('billReference');
+  const cashierId = url.searchParams.get('cashierId');
+  const unseenOnly = url.searchParams.get('unseenByAdminOnly') === '1';
+
+  const conditions = [];
+  const binds = [];
+  if (billReference) {
+    conditions.push('bill_reference = ?');
+    binds.push(billReference);
+  }
+  if (cashierId) {
+    conditions.push('cashier_id = ?');
+    binds.push(cashierId);
+  }
+  if (unseenOnly) {
+    conditions.push('seen_by_admin = 0');
+  }
+
+  let query = 'SELECT * FROM bill_item_deletions';
+  if (conditions.length > 0) {
+    query += ' WHERE ' + conditions.join(' AND ');
+  }
+  query += ' ORDER BY created_at DESC LIMIT ?';
+  binds.push(limit);
+
+  const result = await env.DB.prepare(query).bind(...binds).all();
+  return jsonResponse({ success: true, deletions: result.results || [] });
+}
+
+async function markBillDeletionsAdminSeen(request, env) {
+  await ensureBillDeletionsTable(env);
+  const body = await request.json().catch(() => ({}));
+  const ids = Array.isArray(body.ids) ? body.ids : [];
+
+  if (ids.length === 0) {
+    await env.DB.prepare(`
+      UPDATE bill_item_deletions SET seen_by_admin = 1 WHERE seen_by_admin = 0
+    `).run();
+    return jsonResponse({ success: true });
+  }
+
+  for (const id of ids) {
+    await env.DB.prepare(`
+      UPDATE bill_item_deletions SET seen_by_admin = 1 WHERE id = ?
+    `).bind(id).run();
+  }
+  return jsonResponse({ success: true });
+}
+
+async function countUnseenBillDeletions(env) {
+  await ensureBillDeletionsTable(env);
+  const row = await env.DB.prepare(`
+    SELECT COUNT(*) as count FROM bill_item_deletions WHERE seen_by_admin = 0
+  `).first();
+  return jsonResponse({ success: true, count: row?.count || 0 });
 }
 
 // ─── HELPER FUNCTIONS ───
