@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import {
   productService,
@@ -23,6 +23,8 @@ import {
 } from '../components/common';
 import { effectiveWholesalePrice } from '../utils/pricing';
 
+type ItemCodeStatus = 'idle' | 'checking' | 'available' | 'exists';
+
 export default function ProductsPage() {
   const { user } = useAuth();
   const userRole = (user?.role || '').toUpperCase();
@@ -31,6 +33,8 @@ export default function ProductsPage() {
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(false);
+  const [itemCodeStatus, setItemCodeStatus] = useState<ItemCodeStatus>('idle');
+  const itemCodeCheckSeq = useRef(0);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -139,7 +143,44 @@ export default function ProductsPage() {
     loadData();
   }, [searchQuery, lowStockOnly, statusFilter]);
 
+  // After scan/type: green if item code is free, red if it already exists
+  useEffect(() => {
+    const modalOpen = isAddModalOpen || editingProduct !== null;
+    const code = formData.itemCode.trim().toUpperCase();
+
+    if (!modalOpen || !code) {
+      setItemCodeStatus('idle');
+      return;
+    }
+
+    setItemCodeStatus('checking');
+    const seq = ++itemCodeCheckSeq.current;
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await productService.list({ search: code });
+        if (seq !== itemCodeCheckSeq.current) return;
+
+        const match = (res.success && res.products
+          ? res.products.find((p) => (p.item_code || '').toUpperCase() === code)
+          : null) || null;
+
+        if (match && (!editingProduct || match.id !== editingProduct.id)) {
+          setItemCodeStatus('exists');
+        } else {
+          setItemCodeStatus('available');
+        }
+      } catch {
+        if (seq === itemCodeCheckSeq.current) {
+          setItemCodeStatus('idle');
+        }
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [formData.itemCode, isAddModalOpen, editingProduct]);
+
   const openAddModal = () => {
+    setItemCodeStatus('idle');
     setFormData({
       itemCode: '',
       itemName: '',
@@ -156,6 +197,7 @@ export default function ProductsPage() {
   };
 
   const openEditModal = async (product: Product) => {
+    setItemCodeStatus('idle');
     setEditingProduct(product);
     setFormData({
       itemCode: product.item_code,
@@ -221,6 +263,7 @@ export default function ProductsPage() {
         if (res.success) {
           playFeedbackSound('success');
           showToast('Product created successfully', 'success');
+          setItemCodeStatus('idle');
           setFormData({
             itemCode: '',
             itemName: '',
@@ -550,6 +593,7 @@ export default function ProductsPage() {
         onClose={() => {
           setIsAddModalOpen(false);
           setEditingProduct(null);
+          setItemCodeStatus('idle');
         }}
         title={editingProduct ? 'Edit Product' : 'Add Product'}
         size="lg"
@@ -569,6 +613,30 @@ export default function ProductsPage() {
                   setFormData({ ...formData, itemCode: e.target.value.toUpperCase() })
                 }
                 monospace
+                autoFocus={!editingProduct}
+                error={itemCodeStatus === 'exists' ? 'Item code already exists' : undefined}
+                helperText={
+                  itemCodeStatus === 'available'
+                    ? 'Item code is available'
+                    : itemCodeStatus === 'checking'
+                      ? 'Checking item code…'
+                      : undefined
+                }
+                rightIcon={
+                  itemCodeStatus === 'exists' ? (
+                    <svg className="w-5 h-5 text-rose-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-label="Item code already exists">
+                      <circle cx="12" cy="12" r="9" strokeWidth="2" />
+                      <path strokeLinecap="round" strokeWidth="2" d="M15 9l-6 6M9 9l6 6" />
+                    </svg>
+                  ) : itemCodeStatus === 'available' ? (
+                    <svg className="w-5 h-5 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-label="Item code available">
+                      <circle cx="12" cy="12" r="9" strokeWidth="2" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.5 12.5l2.5 2.5 4.5-5" />
+                    </svg>
+                  ) : itemCodeStatus === 'checking' ? (
+                    <span className="w-4 h-4 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin" aria-label="Checking" />
+                  ) : undefined
+                }
               />
             </div>
             <div className="mt-3">
