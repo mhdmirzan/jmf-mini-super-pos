@@ -39,11 +39,58 @@
   --pos-text-muted: #64748b;
 }
 
-/* Base styles for professional desktop retail terminal */
-* {
-  margin: 0;
-  padding: 0;
+/* Base styles for professional desktop retail terminal.
+   Keep this reset in @layer base so Tailwind margin/padding utilities can win. */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+}
+
+/* Login page — explicit spacing (unlayered so it wins over the * reset) */
+.login-screen {
   box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 32px;
+}
+
+.login-card {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 24rem;
+  margin: 24px;
+  padding: 40px 36px;
+  background-color: #ffffff;
+  border: 1px solid var(--pos-border);
+  border-radius: 0.5rem;
+}
+
+.login-card > h1 {
+  margin: 0 0 28px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.login-error {
+  margin: 0 0 16px;
+}
+
+.login-footer {
+  margin: 28px 0 0;
+  text-align: center;
+  font-size: 11px;
+  color: var(--pos-text-muted);
+  letter-spacing: 0.02em;
 }
 
 html,
@@ -194,34 +241,48 @@ button:active,
 }
 
 /* 80mm Thermal Receipt Print Rules */
+@page {
+  size: 80mm auto;
+  margin: 0;
+}
+
 @media print {
+  html,
   body {
-    background: transparent !important;
+    background: #fff !important;
     margin: 0 !important;
     padding: 0 !important;
+    width: 80mm !important;
+    height: auto !important;
+    overflow: visible !important;
   }
 
-  /* Hide all UI elements except printable-receipt */
   body * {
-    visibility: hidden;
+    visibility: hidden !important;
   }
 
   #printable-receipt,
   #printable-receipt * {
-    visibility: visible;
+    visibility: visible !important;
   }
 
   #printable-receipt {
-    position: absolute;
-    left: 0;
-    top: 0;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
     width: 80mm !important;
+    max-width: 80mm !important;
     margin: 0 !important;
     padding: 2mm !important;
     box-shadow: none !important;
     border: none !important;
     background: white !important;
     color: black !important;
-    font-family: monospace !important;
+    font-family: "Courier New", Courier, monospace !important;
+    overflow: visible !important;
+  }
+
+  .print\:hidden {
+    display: none !important;
   }
 }

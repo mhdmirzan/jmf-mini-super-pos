@@ -19,13 +19,15 @@ import {
 
 export default function SettingsPage() {
   const { user } = useAuth();
-  const isSuperAdmin = (user?.role || '').toUpperCase() === 'SUPER_ADMIN';
+  const roleUpper = (user?.role || '').toUpperCase().trim();
+  const isSuperAdmin = roleUpper === 'SUPER_ADMIN' || roleUpper === 'SUPERADMIN';
+  const canEditStore = roleUpper === 'ADMIN' || isSuperAdmin;
 
   const [activeTab, setActiveTab] = useState<'shop' | 'system' | 'audit'>('shop');
   const [loading, setLoading] = useState(false);
 
-  // Settings State
-  const [shopName, setShopName] = useState('Mini Super');
+  // Settings State — each shop customizes its own name here (Admin only)
+  const [shopName, setShopName] = useState('');
   const [shopAddress, setShopAddress] = useState('');
   const [shopPhone, setShopPhone] = useState('');
   const [receiptFooter, setReceiptFooter] = useState('Thank you for shopping with us! Please come again.');
@@ -98,13 +100,29 @@ export default function SettingsPage() {
 
   const handleSaveShopSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEditStore) {
+      showToast('Only Admin can change store settings', 'error');
+      return;
+    }
+    const trimmedName = shopName.trim();
+    if (!trimmedName) {
+      showToast('Store name is required', 'error');
+      return;
+    }
     try {
-      await settingsService.set({ key: 'SHOP_NAME', value: shopName, updatedBy: user?.id });
-      await settingsService.set({ key: 'SHOP_ADDRESS', value: shopAddress, updatedBy: user?.id });
-      await settingsService.set({ key: 'SHOP_PHONE', value: shopPhone, updatedBy: user?.id });
-      await settingsService.set({ key: 'RECEIPT_FOOTER', value: receiptFooter, updatedBy: user?.id });
-      await settingsService.set({ key: 'INVOICE_PREFIX', value: invoicePrefix, updatedBy: user?.id });
-      await settingsService.set({ key: 'RETURN_PREFIX', value: returnPrefix, updatedBy: user?.id });
+      const results = await Promise.all([
+        settingsService.set({ key: 'SHOP_NAME', value: trimmedName, updatedBy: user?.id }),
+        settingsService.set({ key: 'SHOP_ADDRESS', value: shopAddress, updatedBy: user?.id }),
+        settingsService.set({ key: 'SHOP_PHONE', value: shopPhone, updatedBy: user?.id }),
+        settingsService.set({ key: 'RECEIPT_FOOTER', value: receiptFooter, updatedBy: user?.id }),
+        settingsService.set({ key: 'INVOICE_PREFIX', value: invoicePrefix, updatedBy: user?.id }),
+        settingsService.set({ key: 'RETURN_PREFIX', value: returnPrefix, updatedBy: user?.id }),
+      ]);
+      const failed = results.find((r: any) => r && r.success === false);
+      if (failed) {
+        showToast(failed.error || 'Error saving settings', 'error');
+        return;
+      }
 
       showToast('Store settings and receipt layout saved', 'success');
       loadAll();
@@ -174,7 +192,7 @@ export default function SettingsPage() {
       />
 
       {/* Tabs */}
-      <div className="pos-card p-1 flex gap-1 shrink-0">
+      <div className="flex gap-1 shrink-0 py-1">
         <button
           onClick={() => setActiveTab('shop')}
           className={`px-3 py-1.5 text-xs font-semibold rounded cursor-pointer transition-colors ${
@@ -226,27 +244,31 @@ export default function SettingsPage() {
                 <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--pos-text)]">
                   Store Details & Receipt Header
                 </h3>
+                <p className="text-[11px] text-[var(--pos-text-muted)] mt-1">
+                  Each shop sets its own store name here. Only Admin can change these details.
+                </p>
               </div>
 
               <form onSubmit={handleSaveShopSettings} className="space-y-3">
                 <Input
-                  label="Supermarket / Store Name *"
+                  label="Store Name *"
                   required
-                  disabled={user?.role === 'CASHIER'}
+                  disabled={!canEditStore}
                   value={shopName}
                   onChange={(e) => setShopName(e.target.value)}
+                  helperText="Shown on receipts and the terminal header for this shop"
                 />
 
                 <Input
                   label="Store Address"
-                  disabled={user?.role === 'CASHIER'}
+                  disabled={!canEditStore}
                   value={shopAddress}
                   onChange={(e) => setShopAddress(e.target.value)}
                 />
 
                 <Input
                   label="Telephone / Contact"
-                  disabled={user?.role === 'CASHIER'}
+                  disabled={!canEditStore}
                   value={shopPhone}
                   onChange={(e) => setShopPhone(e.target.value)}
                 />
@@ -257,7 +279,7 @@ export default function SettingsPage() {
                   </label>
                   <textarea
                     rows={2}
-                    disabled={user?.role === 'CASHIER'}
+                    disabled={!canEditStore}
                     value={receiptFooter}
                     onChange={(e) => setReceiptFooter(e.target.value)}
                     className="pos-input w-full py-1.5 px-3 text-xs"
@@ -267,7 +289,7 @@ export default function SettingsPage() {
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   <Input
                     label="Invoice Prefix"
-                    disabled={user?.role === 'CASHIER'}
+                    disabled={!canEditStore}
                     value={invoicePrefix}
                     onChange={(e) => setInvoicePrefix(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''))}
                     helperText={`Format: ${invoicePrefix}-000001`}
@@ -275,7 +297,7 @@ export default function SettingsPage() {
                   />
                   <Input
                     label="Return Prefix"
-                    disabled={user?.role === 'CASHIER'}
+                    disabled={!canEditStore}
                     value={returnPrefix}
                     onChange={(e) => setReturnPrefix(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''))}
                     helperText={`Format: ${returnPrefix}-000001`}
@@ -284,14 +306,14 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="pt-3 border-t border-[var(--pos-border)] flex justify-end">
-                  {user?.role === 'CASHIER' ? (
-                    <span className="text-xs text-[var(--pos-text-muted)]">
-                      Cashier view: Settings are read-only.
-                    </span>
-                  ) : (
+                  {canEditStore ? (
                     <Button type="submit" variant="primary">
                       Save Store Settings
                     </Button>
+                  ) : (
+                    <span className="text-xs text-[var(--pos-text-muted)]">
+                      Only Admin can edit store settings.
+                    </span>
                   )}
                 </div>
               </form>

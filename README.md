@@ -1,6 +1,6 @@
-# Mini Supermarket Offline-First POS System
+# Buyra
 
-A high-speed, production-grade, offline-first Point of Sale (POS) system built for mini supermarkets and retail stores.
+Buyra is a high-speed, offline-first Point of Sale (POS) system for retail shops. Each shop configures its own store name, address, and receipt details.
 
 Designed to never lose a sale during internet blackouts by executing all checkout operations on embedded SQLite with zero cloud dependencies.
 

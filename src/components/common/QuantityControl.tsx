@@ -11,6 +11,7 @@ export interface QuantityControlProps {
   disabled?: boolean;
   size?: 'sm' | 'md';
   className?: string;
+  inputRef?: React.Ref<HTMLInputElement>;
 }
 
 export const QuantityControl: React.FC<QuantityControlProps> = ({
@@ -24,6 +25,7 @@ export const QuantityControl: React.FC<QuantityControlProps> = ({
   disabled = false,
   size = 'md',
   className = '',
+  inputRef,
 }) => {
   const isWeight = (unit || '').toUpperCase() === 'KG' || (step !== undefined && step < 1);
   const actualStep = step !== undefined ? step : (isWeight ? 0.25 : 1);
@@ -31,9 +33,7 @@ export const QuantityControl: React.FC<QuantityControlProps> = ({
 
   const formatDisplay = (val: number) => {
     if (isWeight) {
-      // Keep up to 3 decimals, trimming unnecessary trailing zeros if whole
       const fixed = Number(val).toFixed(3);
-      // If ends with .000, keep or format clean
       return parseFloat(fixed).toString();
     }
     return Math.floor(val).toString();
@@ -80,7 +80,6 @@ export const QuantityControl: React.FC<QuantityControlProps> = ({
     }
 
     if (!isWeight) {
-      // Pieces / Count: Int values only
       const clean = raw.replace(/[^0-9]/g, '');
       if (clean === '') return;
       const val = parseInt(clean, 10);
@@ -89,10 +88,8 @@ export const QuantityControl: React.FC<QuantityControlProps> = ({
         onChange(finalVal);
       }
     } else {
-      // Weight (KG): Up to 3 decimal places
-      // Regex check: maximum 3 decimals, positive numbers
       if (!/^\d*(\.\d{0,3})?$/.test(raw)) {
-        return; // reject invalid input with > 3 decimals
+        return;
       }
       const val = parseFloat(raw);
       if (!isNaN(val) && val > 0) {
@@ -129,7 +126,6 @@ export const QuantityControl: React.FC<QuantityControlProps> = ({
       e.preventDefault();
       return;
     }
-    // Limit to 3 decimal places on typing
     if (isWeight && e.key >= '0' && e.key <= '9') {
       const input = e.currentTarget;
       const currentVal = input.value;
@@ -145,6 +141,7 @@ export const QuantityControl: React.FC<QuantityControlProps> = ({
     }
     if (e.key === 'Enter') {
       e.preventDefault();
+      e.stopPropagation();
       handleBlur();
       if (onEnter) onEnter();
     }
@@ -164,15 +161,17 @@ export const QuantityControl: React.FC<QuantityControlProps> = ({
         -
       </button>
       <input
+        ref={inputRef}
         type="text"
         value={textVal}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
-        onFocus={() => {
+        onFocus={(e) => {
           setIsFocused(true);
+          e.currentTarget.select();
         }}
         onBlur={handleBlur}
-        inputMode={isWeight ? "decimal" : "numeric"}
+        inputMode={isWeight ? 'decimal' : 'numeric'}
         disabled={disabled}
         className={`${isSm ? (isWeight ? 'w-16 h-6 text-xs' : 'w-9 h-6 text-xs') : (isWeight ? 'w-20 h-8 text-sm' : 'w-12 h-8 text-sm')} text-center font-mono font-bold text-slate-900 bg-transparent border-x border-slate-300 focus:outline-none focus:bg-blue-50`}
       />

@@ -6,6 +6,9 @@
 const migration001 = require('./001_initial_schema');
 const migration002 = require('./002_add_unit_column');
 const migration003 = require('./003_add_approval_requests');
+const migration004 = require('./004_remove_barcode');
+const migration005 = require('./005_remove_categories');
+const migration006 = require('./006_add_bill_item_deletions');
 
 /**
  * Run all pending migrations.
@@ -27,6 +30,9 @@ function runMigrations(db) {
     { name: '001_initial_schema', up: migration001.up },
     { name: '002_add_unit_column', up: migration002.up },
     { name: '003_add_approval_requests', up: migration003.up },
+    { name: '004_remove_barcode', up: migration004.up },
+    { name: '005_remove_categories', up: migration005.up },
+    { name: '006_add_bill_item_deletions', up: migration006.up },
   ];
 
   const runMigration = db.transaction(() => {
@@ -42,7 +48,7 @@ function runMigrations(db) {
 
   runMigration();
 
-  // Self-heal check: ensure unit and wholesale_discount columns exist in products table regardless of migration history
+  // Self-heal check: ensure expected product columns regardless of migration history
   try {
     const pragma = db.prepare('PRAGMA table_info(products)').all();
     if (pragma.length > 0) {
@@ -54,20 +60,35 @@ function runMigrations(db) {
         db.exec("ALTER TABLE products ADD COLUMN wholesale_discount REAL NOT NULL DEFAULT 0;");
         console.log('[Migration] Self-healed: Added missing wholesale_discount column to products table');
       }
+      if (pragma.some(c => c.name === 'barcode')) {
+        db.exec('DROP INDEX IF EXISTS idx_products_barcode');
+        db.exec('ALTER TABLE products DROP COLUMN barcode');
+        console.log('[Migration] Self-healed: Dropped barcode column from products table');
+      }
+      if (pragma.some(c => c.name === 'category_id') || pragma.some(c => c.name === 'sub_category_id')) {
+        try {
+          db.exec('DROP INDEX IF EXISTS idx_products_category');
+          if (pragma.some(c => c.name === 'category_id')) {
+            db.exec('ALTER TABLE products DROP COLUMN category_id');
+          }
+          if (pragma.some(c => c.name === 'sub_category_id')) {
+            db.exec('ALTER TABLE products DROP COLUMN sub_category_id');
+          }
+        } catch (dropErr) {
+          // Legacy FK definitions require a full table rebuild
+          const migration005 = require('./005_remove_categories');
+          migration005.up(db);
+        }
+      }
     }
+    db.exec('DROP INDEX IF EXISTS idx_sub_categories_category');
+    db.exec('DROP TABLE IF EXISTS sub_categories');
+    db.exec('DROP TABLE IF EXISTS categories');
   } catch (err) {
     console.error('[Migration] Self-heal check error:', err);
   }
 
   console.log('[Migration] All migrations are up to date');
-
-  // Seed sample products if empty
-  try {
-    const { seedDatabase } = require('../seed/seed');
-    seedDatabase(db);
-  } catch (err) {
-    console.error('[Migration] Seed error (non-fatal):', err);
-  }
 }
 
 module.exports = { runMigrations };

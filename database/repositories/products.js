@@ -1,6 +1,6 @@
 /**
  * Products Repository - CRUD operations for products.
- * Handles product search by barcode, item code, and text.
+ * Handles product search by item code and text.
  */
 
 const { v4: uuidv4 } = require('uuid');
@@ -13,29 +13,19 @@ class ProductRepository {
   /**
    * Create a new product.
    */
-  create({ itemCode, barcode, categoryId, subCategoryId, itemName, unit, quantity, minimumQuantity, cost, retailPrice, retailDiscount, wholesalePrice, createdBy }) {
-    // Check item_code uniqueness
+  create({ id: providedId, itemCode, itemName, unit, quantity, minimumQuantity, cost, retailPrice, retailDiscount, wholesalePrice, createdBy }) {
     const existing = this.db.prepare('SELECT id FROM products WHERE item_code = ?').get(itemCode);
     if (existing) {
       return { success: false, error: 'Item code already exists.' };
     }
 
-    // Check barcode uniqueness if provided
-    if (barcode) {
-      const barcodeExists = this.db.prepare('SELECT id FROM products WHERE barcode = ?').get(barcode);
-      if (barcodeExists) {
-        return { success: false, error: 'Barcode already exists.' };
-      }
-    }
-
-    const id = uuidv4();
+    const id = providedId || uuidv4();
     const finalUnit = (unit && String(unit).trim().toUpperCase() === 'KG') ? 'KG' : 'PCS';
     this.db.prepare(
-      `INSERT INTO products (id, item_code, barcode, category_id, sub_category_id, item_name, unit, quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
-    ).run(id, itemCode, barcode || null, categoryId || null, subCategoryId || null, itemName, finalUnit, quantity || 0, minimumQuantity || 0, cost || 0, retailPrice || 0, retailDiscount || 0, wholesalePrice || 0);
+      `INSERT INTO products (id, item_code, item_name, unit, quantity, minimum_quantity, cost, retail_price, retail_discount, wholesale_price, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
+    ).run(id, itemCode, itemName, finalUnit, quantity || 0, minimumQuantity || 0, cost || 0, retailPrice || 0, retailDiscount || 0, wholesalePrice || 0);
 
-    // Stock movement for initial quantity
     if (quantity && quantity > 0) {
       let validUserId = createdBy;
       if (validUserId) {
@@ -64,13 +54,12 @@ class ProductRepository {
   /**
    * Update a product.
    */
-  update({ id, itemCode, barcode, categoryId, subCategoryId, itemName, unit, minimumQuantity, cost, retailPrice, retailDiscount, wholesalePrice, isActive, updatedBy }) {
+  update({ id, itemCode, itemName, unit, minimumQuantity, cost, retailPrice, retailDiscount, wholesalePrice, isActive, updatedBy }) {
     const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     if (!product) {
       return { success: false, error: 'Product not found.' };
     }
 
-    // Check item_code uniqueness if changed
     if (itemCode && itemCode !== product.item_code) {
       const existing = this.db.prepare('SELECT id FROM products WHERE item_code = ? AND id != ?').get(itemCode, id);
       if (existing) {
@@ -78,15 +67,6 @@ class ProductRepository {
       }
     }
 
-    // Check barcode uniqueness if changed
-    if (barcode && barcode !== product.barcode) {
-      const existing = this.db.prepare('SELECT id FROM products WHERE barcode = ? AND id != ?').get(barcode, id);
-      if (existing) {
-        return { success: false, error: 'Barcode already exists.' };
-      }
-    }
-
-    // Track price changes for audit
     const priceChanged = (retailPrice !== undefined && retailPrice !== product.retail_price) ||
       (wholesalePrice !== undefined && wholesalePrice !== product.wholesale_price) ||
       (cost !== undefined && cost !== product.cost);
@@ -98,9 +78,6 @@ class ProductRepository {
     this.db.prepare(
       `UPDATE products SET
         item_code = COALESCE(?, item_code),
-        barcode = COALESCE(?, barcode),
-        category_id = COALESCE(?, category_id),
-        sub_category_id = COALESCE(?, sub_category_id),
         item_name = COALESCE(?, item_name),
         unit = ?,
         minimum_quantity = COALESCE(?, minimum_quantity),
@@ -113,15 +90,14 @@ class ProductRepository {
         version = version + 1
       WHERE id = ?`
     ).run(
-      itemCode || null, barcode || null, categoryId || null, subCategoryId || null,
-      itemName || null, finalUnit, minimumQuantity !== undefined ? minimumQuantity : null,
+      itemCode || null, itemName || null, finalUnit,
+      minimumQuantity !== undefined ? minimumQuantity : null,
       cost !== undefined ? cost : null, retailPrice !== undefined ? retailPrice : null,
       retailDiscount !== undefined ? retailDiscount : null,
       wholesalePrice !== undefined ? wholesalePrice : null,
       isActive !== undefined ? (isActive ? 1 : 0) : null, id
     );
 
-    // Audit price change
     if (priceChanged && updatedBy) {
       this.db.prepare(
         "INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, details, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))"
@@ -139,16 +115,8 @@ class ProductRepository {
     return { success: true };
   }
 
-  /**
-   * List products with optional filters.
-   */
   list(filters = {}) {
-    let query = `
-      SELECT p.*, c.name as category_name, sc.name as sub_category_name
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-    `;
+    let query = 'SELECT p.* FROM products p';
     const params = [];
     const conditions = [];
 
@@ -156,18 +124,10 @@ class ProductRepository {
       conditions.push('p.is_active = ?');
       params.push(filters.isActive ? 1 : 0);
     }
-    if (filters.categoryId) {
-      conditions.push('p.category_id = ?');
-      params.push(filters.categoryId);
-    }
-    if (filters.subCategoryId) {
-      conditions.push('p.sub_category_id = ?');
-      params.push(filters.subCategoryId);
-    }
     if (filters.search && filters.search.trim()) {
-      conditions.push('(p.barcode LIKE ? OR p.item_code LIKE ? OR p.item_name LIKE ?)');
+      conditions.push('(p.item_code LIKE ? OR p.item_name LIKE ?)');
       const term = `%${filters.search.trim()}%`;
-      params.push(term, term, term);
+      params.push(term, term);
     }
     if (filters.lowStock) {
       conditions.push('p.quantity <= p.minimum_quantity');
@@ -183,74 +143,35 @@ class ProductRepository {
     return { success: true, products };
   }
 
-  /**
-   * Get a single product by ID.
-   */
   get(id) {
-    const product = this.db.prepare(`
-      SELECT p.*, c.name as category_name, sc.name as sub_category_name
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-      WHERE p.id = ?
-    `).get(id);
+    const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     if (!product) {
       return { success: false, error: 'Product not found.' };
     }
     return { success: true, product };
   }
 
-  /**
-   * Search products by barcode, item code, or name.
-   */
   search(query) {
     if (!query || query.trim() === '') {
       return { success: true, products: [] };
     }
     const searchTerm = `%${query}%`;
     const products = this.db.prepare(`
-      SELECT p.*, c.name as category_name, sc.name as sub_category_name
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-      WHERE p.is_active = 1 AND (
-        p.barcode LIKE ? OR
-        p.item_code LIKE ? OR
-        p.item_name LIKE ?
+      SELECT * FROM products
+      WHERE is_active = 1 AND (
+        item_code LIKE ? OR
+        item_name LIKE ?
       )
-      ORDER BY p.item_name ASC
+      ORDER BY item_name ASC
       LIMIT 50
-    `).all(searchTerm, searchTerm, searchTerm);
+    `).all(searchTerm, searchTerm);
     return { success: true, products };
   }
 
-  /**
-   * Get a product by barcode (used by barcode scanner).
-   */
-  getByBarcode(barcode) {
-    const product = this.db.prepare(`
-      SELECT p.*, c.name as category_name, sc.name as sub_category_name
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-      WHERE p.barcode = ? AND p.is_active = 1
-    `).get(barcode);
-    if (!product) {
-      return { success: false, error: 'Product not found.' };
-    }
-    return { success: true, product };
-  }
-
-  /**
-   * Get a product by item code.
-   */
   getByItemCode(itemCode) {
     const product = this.db.prepare(`
-      SELECT p.*, c.name as category_name, sc.name as sub_category_name
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN sub_categories sc ON p.sub_category_id = sc.id
-      WHERE p.item_code = ? AND p.is_active = 1
+      SELECT * FROM products
+      WHERE item_code = ? AND is_active = 1
     `).get(itemCode);
     if (!product) {
       return { success: false, error: 'Product not found.' };
@@ -258,11 +179,6 @@ class ProductRepository {
     return { success: true, product };
   }
 
-  /**
-   * Delete or deactivate a product.
-   * If the product is referenced in invoices or sales returns, it is deactivated to preserve financial integrity.
-   * Otherwise, it and its stock movements are permanently deleted.
-   */
   delete(id) {
     const product = this.db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     if (!product) {

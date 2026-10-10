@@ -217,7 +217,6 @@ export default function ReturnsPage() {
             product_id: it.productId,
             item_code: it.itemCode,
             item_name: it.itemName,
-            category_id: null,
             sales_price: it.salesPrice,
             quantity: it.returnQty,
             reason: it.reason,

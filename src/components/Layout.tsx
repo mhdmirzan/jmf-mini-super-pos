@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { syncService, approvalService } from '../services/api';
+import { syncService, approvalService, billDeletionService, settingsService } from '../services/api';
+import type { BillItemDeletion } from '../types';
 import { StatusIndicator } from './common/StatusIndicator';
 
 function playNotificationChime() {
@@ -32,12 +33,33 @@ export default function Layout() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingSync, setPendingSync] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [shopName, setShopName] = useState('');
 
   // Real-time Wholesale Approvals (For Admin & Super Admin)
   const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
   const prevCountRef = useRef(0);
   const roleUpper = (user?.role || '').toUpperCase().trim();
   const isAdminOrSuper = roleUpper === 'ADMIN' || roleUpper === 'SUPER_ADMIN' || roleUpper === 'SUPERADMIN' || roleUpper === 'MANAGER';
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await settingsService.get('SHOP_NAME');
+        if (cancelled) return;
+        const raw =
+          res?.setting?.setting_value ??
+          res?.value ??
+          (typeof res?.setting === 'string' ? res.setting : '');
+        if (raw) setShopName(String(raw).trim());
+      } catch {
+        // keep empty; header falls back to Buyra
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname]);
 
   const checkApprovals = async () => {
     if (!isAdminOrSuper) return;
@@ -63,12 +85,13 @@ export default function Layout() {
   }, [isAdminOrSuper, user]);
 
   useEffect(() => {
+    const brand = shopName ? `${shopName} · Buyra` : 'Buyra';
     if (isAdminOrSuper && pendingApprovals.length > 0) {
-      document.title = `🔔 (${pendingApprovals.length}) Wholesale Approval Request - JMF Mini Super`;
+      document.title = `🔔 (${pendingApprovals.length}) Wholesale Approval Request - ${brand}`;
     } else {
-      document.title = 'JMF Mini Super POS';
+      document.title = brand;
     }
-  }, [isAdminOrSuper, pendingApprovals.length]);
+  }, [isAdminOrSuper, pendingApprovals.length, shopName]);
 
   const handleRespondApproval = async (requestId: string, status: 'APPROVED' | 'REJECTED') => {
     try {
@@ -133,6 +156,72 @@ export default function Layout() {
 
   const [viewBillRequestId, setViewBillRequestId] = useState<string | null>(null);
 
+  // Bill item deletion notifications
+  const [billDeletionAlerts, setBillDeletionAlerts] = useState<BillItemDeletion[]>([]);
+  const [unseenDeletionCount, setUnseenDeletionCount] = useState(0);
+  const [deletionPanelOpen, setDeletionPanelOpen] = useState(false);
+  const [latestDeletionBanner, setLatestDeletionBanner] = useState<string | null>(null);
+  const deletionPrevCountRef = useRef(0);
+  const deletionBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshBillDeletions = async () => {
+    try {
+      const listRes = await billDeletionService.list({
+        limit: 15,
+        cashierId: isAdminOrSuper ? undefined : user?.id,
+        unseenByAdminOnly: isAdminOrSuper ? false : undefined,
+      });
+      if (listRes.success && Array.isArray(listRes.deletions)) {
+        setBillDeletionAlerts(listRes.deletions as BillItemDeletion[]);
+      }
+
+      if (isAdminOrSuper) {
+        const countRes = await billDeletionService.countUnseenAdmin();
+        if (countRes.success) {
+          const count = countRes.count || 0;
+          if (count > deletionPrevCountRef.current) {
+            playNotificationChime();
+          }
+          deletionPrevCountRef.current = count;
+          setUnseenDeletionCount(count);
+        }
+      }
+    } catch (err) {
+      console.warn('[Layout] Bill deletion poll error:', err);
+    }
+  };
+
+  useEffect(() => {
+    refreshBillDeletions();
+    const interval = setInterval(refreshBillDeletions, 3000);
+    const onDeleted = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ message?: string }>).detail;
+      if (detail?.message) {
+        setLatestDeletionBanner(detail.message);
+        if (deletionBannerTimerRef.current) clearTimeout(deletionBannerTimerRef.current);
+        deletionBannerTimerRef.current = setTimeout(() => setLatestDeletionBanner(null), 12000);
+      }
+      refreshBillDeletions();
+    };
+    window.addEventListener('pos:bill-item-deleted', onDeleted);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('pos:bill-item-deleted', onDeleted);
+      if (deletionBannerTimerRef.current) clearTimeout(deletionBannerTimerRef.current);
+    };
+  }, [isAdminOrSuper, user?.id]);
+
+  const openDeletionHistory = async () => {
+    if (isAdminOrSuper) {
+      await billDeletionService.markAdminSeen();
+      setUnseenDeletionCount(0);
+      deletionPrevCountRef.current = 0;
+      navigate('/bill-deletions');
+      return;
+    }
+    setDeletionPanelOpen((v) => !v);
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--pos-bg)] select-none">
       {/* Top Operational Bar (Full Width across all users) */}
@@ -153,13 +242,11 @@ export default function Layout() {
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-[var(--pos-accent)] shrink-0" />
               <span className="font-bold text-[var(--pos-text)] tracking-wider uppercase text-xs">
-                MINI SUPER POS
+                {shopName || 'Buyra'}
               </span>
             </div>
           )}
 
-          <span className="text-slate-300">|</span>
-          <span className="font-mono font-bold text-[var(--pos-text)]">POS-01</span>
           <span className="text-slate-300">|</span>
           <StatusIndicator
             isOnline={isOnline}
@@ -195,6 +282,77 @@ export default function Layout() {
               <span className="px-1.5 py-0.5 bg-[var(--pos-bg-subtle)] border border-[var(--pos-border)] rounded text-[var(--pos-text)]">Esc Clear</span>
             </div>
           )}
+
+          {latestDeletionBanner && (
+            <div
+              className="hidden md:flex max-w-xs lg:max-w-md items-center px-2.5 py-1 rounded border border-amber-200 bg-amber-50 text-[11px] text-amber-950 font-medium leading-snug truncate"
+              title={latestDeletionBanner}
+            >
+              {latestDeletionBanner}
+            </div>
+          )}
+
+          {/* Bill item deletion notifications (left of Sign Out) */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={openDeletionHistory}
+              className="relative text-xs font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100 px-2.5 py-1 rounded border border-slate-200 cursor-pointer transition-colors flex items-center gap-1.5"
+              title={
+                isAdminOrSuper
+                  ? 'View bill item deletion notifications'
+                  : 'Recent bill item removals'
+              }
+            >
+              <span className="text-sm">🔔</span>
+              <span className="hidden sm:inline">Alerts</span>
+              {isAdminOrSuper && unseenDeletionCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
+                  {unseenDeletionCount > 99 ? '99+' : unseenDeletionCount}
+                </span>
+              )}
+            </button>
+
+            {deletionPanelOpen && !isAdminOrSuper && (
+              <>
+                <button
+                  type="button"
+                  className="fixed inset-0 z-[9998] cursor-default"
+                  aria-label="Close alerts"
+                  onClick={() => setDeletionPanelOpen(false)}
+                />
+                <div className="absolute right-0 top-full mt-1 z-[9999] w-[min(22rem,calc(100vw-2rem))] bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden">
+                  <div className="px-3 py-2 bg-slate-900 text-white text-xs font-bold flex justify-between items-center">
+                    <span>Bill item alerts</span>
+                    <button
+                      type="button"
+                      className="text-slate-300 hover:text-white cursor-pointer"
+                      onClick={() => setDeletionPanelOpen(false)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
+                    {billDeletionAlerts.length === 0 ? (
+                      <p className="p-4 text-xs text-slate-500 text-center">No recent alerts</p>
+                    ) : (
+                      billDeletionAlerts.slice(0, 8).map((row) => (
+                        <div key={row.id} className="p-3 text-xs text-slate-700 leading-snug">
+                          {row.message}
+                          <div className="text-[10px] text-slate-400 font-mono mt-1">
+                            {new Date(row.created_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
 
           {/* System Logout Button (Visible for all users) */}
           <button

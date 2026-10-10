@@ -156,9 +156,8 @@ class ReportsRepository {
    */
   lowStock() {
     const products = this.db.prepare(`
-      SELECT p.*, c.name as category_name
+      SELECT p.*
       FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
       WHERE p.is_active = 1 AND p.quantity <= p.minimum_quantity
       ORDER BY p.quantity ASC
     `).all();
@@ -174,10 +173,8 @@ class ReportsRepository {
       SELECT 
         p.id, p.item_code, p.item_name, p.unit, p.quantity, p.cost, p.retail_price,
         (p.quantity * p.cost) as cost_value,
-        (p.quantity * p.retail_price) as retail_value,
-        c.name as category_name
+        (p.quantity * p.retail_price) as retail_value
       FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
       WHERE p.is_active = 1
       ORDER BY retail_value DESC
     `).all();

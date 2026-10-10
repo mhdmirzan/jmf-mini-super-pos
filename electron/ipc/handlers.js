@@ -7,7 +7,6 @@ const { getDatabase } = require('../../database/connection');
 const { AuthRepository } = require('../../database/repositories/auth');
 const { UserRepository } = require('../../database/repositories/users');
 const { ProductRepository } = require('../../database/repositories/products');
-const { CategoryRepository } = require('../../database/repositories/categories');
 const { InvoiceRepository } = require('../../database/repositories/invoices');
 const { ReturnsRepository } = require('../../database/repositories/returns');
 const { StockRepository } = require('../../database/repositories/stock');
@@ -15,6 +14,7 @@ const { SettingsRepository } = require('../../database/repositories/settings');
 const { AuditRepository } = require('../../database/repositories/audit');
 const { ReportsRepository } = require('../../database/repositories/reports');
 const { ApprovalRepository } = require('../../database/repositories/approvals');
+const { BillDeletionsRepository } = require('../../database/repositories/billDeletions');
 const { v4: uuidv4 } = require('uuid');
 const { app } = require('electron');
 const path = require('path');
@@ -25,7 +25,6 @@ function registerIpcHandlers(ipcMain, syncService = null) {
   const auth = new AuthRepository(db);
   const users = new UserRepository(db);
   const products = new ProductRepository(db);
-  const categories = new CategoryRepository(db);
   const invoices = new InvoiceRepository(db);
   const returns = new ReturnsRepository(db);
   const stock = new StockRepository(db);
@@ -33,6 +32,7 @@ function registerIpcHandlers(ipcMain, syncService = null) {
   const audit = new AuditRepository(db);
   const reports = new ReportsRepository(db);
   const approvals = new ApprovalRepository(db);
+  const billDeletions = new BillDeletionsRepository(db);
 
   // ─── AUTH ───
   ipcMain.handle('auth:login', async (_event, { username, password }) => {
@@ -145,14 +145,6 @@ function registerIpcHandlers(ipcMain, syncService = null) {
     }
   });
 
-  ipcMain.handle('products:getByBarcode', async (_event, { barcode }) => {
-    try {
-      return products.getByBarcode(barcode);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
   ipcMain.handle('products:getByItemCode', async (_event, { itemCode }) => {
     try {
       return products.getByItemCode(itemCode);
@@ -161,59 +153,16 @@ function registerIpcHandlers(ipcMain, syncService = null) {
     }
   });
 
-  // ─── CATEGORIES ───
-  ipcMain.handle('categories:create', async (_event, data) => {
-    try {
-      return categories.createCategory(data);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('categories:update', async (_event, data) => {
-    try {
-      return categories.updateCategory(data);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('categories:list', async () => {
-    try {
-      return categories.listCategories();
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('subcategories:create', async (_event, data) => {
-    try {
-      return categories.createSubCategory(data);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('subcategories:update', async (_event, data) => {
-    try {
-      return categories.updateSubCategory(data);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('subcategories:list', async (_event, { categoryId } = {}) => {
-    try {
-      return categories.listSubCategories(categoryId);
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
   // ─── INVOICES ───
   ipcMain.handle('invoices:create', async (_event, data) => {
     try {
-      return invoices.create(data);
+      const result = invoices.create(data);
+      if (result.success && syncService) {
+        syncService.runSyncCycle().catch((err) => {
+          console.warn('[IPC] invoice sync trigger:', err?.message || err);
+        });
+      }
+      return result;
     } catch (error) {
       console.error('[IPC] invoices:create error:', error);
       return { success: false, error: error.message };
@@ -273,7 +222,11 @@ function registerIpcHandlers(ipcMain, syncService = null) {
   // ─── STOCK ───
   ipcMain.handle('stock:adjust', async (_event, data) => {
     try {
-      return stock.adjust(data);
+      const result = stock.adjust(data);
+      if (result.success && syncService) {
+        syncService.runSyncCycle().catch(() => {});
+      }
+      return result;
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -455,6 +408,145 @@ function registerIpcHandlers(ipcMain, syncService = null) {
       return approvals.verifyAdmin(credentials);
     } catch (error) {
       console.error('[IPC] approval:verifyAdmin error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // ─── BILL ITEM DELETIONS (POS notifications) ───
+  ipcMain.handle('billDeletion:create', async (_event, payload) => {
+    try {
+      return billDeletions.create(payload);
+    } catch (error) {
+      console.error('[IPC] billDeletion:create error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('billDeletion:list', async (_event, filters) => {
+    try {
+      return billDeletions.list(filters || {});
+    } catch (error) {
+      console.error('[IPC] billDeletion:list error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('billDeletion:markAdminSeen', async (_event, payload) => {
+    try {
+      return billDeletions.markAdminSeen(payload || {});
+    } catch (error) {
+      console.error('[IPC] billDeletion:markAdminSeen error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('billDeletion:countUnseenAdmin', async () => {
+    try {
+      return billDeletions.countUnseenAdmin();
+    } catch (error) {
+      console.error('[IPC] billDeletion:countUnseenAdmin error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('printer:list', async (event) => {
+    try {
+      const printers = await event.sender.getPrintersAsync();
+      return { success: true, printers: printers || [] };
+    } catch (error) {
+      return { success: false, error: error.message, printers: [] };
+    }
+  });
+
+  ipcMain.handle('printer:printReceipt', async (event, { html } = {}) => {
+    try {
+      const printers = await event.sender.getPrintersAsync();
+      const connected = (printers || []).filter((p) => p && p.name);
+      if (connected.length === 0) {
+        return { success: false, error: 'No printer is connected' };
+      }
+
+      const thermalMatch = connected.find((p) => {
+        const n = `${p.name} ${p.displayName || ''} ${p.description || ''}`.toLowerCase();
+        return /pos|thermal|receipt|80mm|xp-|epson|star |citizen|bixolon|xprinter|rongta/.test(n);
+      });
+      const deviceName = (thermalMatch || connected.find((p) => p.isDefault) || connected[0]).name;
+
+      const printHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Receipt</title>
+  <style>
+    @page { size: 80mm auto; margin: 0; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 80mm;
+      background: #fff;
+      color: #000;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 12px;
+      line-height: 1.25;
+    }
+    #printable-receipt { width: 72mm; margin: 0 auto; padding: 2mm; }
+  </style>
+</head>
+<body>
+  <div id="printable-receipt">${html || ''}</div>
+</body>
+</html>`;
+
+      const { BrowserWindow } = require('electron');
+      const printWin = new BrowserWindow({
+        show: false,
+        width: 302,
+        height: 900,
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      });
+
+      await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(printHtml));
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const printed = await new Promise((resolve) => {
+        printWin.webContents.print(
+          {
+            silent: true,
+            printBackground: false,
+            deviceName,
+            margins: { marginType: 'none' },
+            pagesPerSheet: 1,
+            copies: 1,
+            pageSize: {
+              width: 80000,
+              height: 297000,
+            },
+          },
+          (success, failureReason) => {
+            resolve({ success: !!success, error: failureReason || null });
+          }
+        );
+      });
+
+      try {
+        if (!printWin.isDestroyed()) printWin.close();
+      } catch {
+        // ignore
+      }
+
+      if (!printed.success) {
+        return {
+          success: false,
+          error: printed.error || 'Printer did not accept the job',
+        };
+      }
+      return { success: true, printer: deviceName };
+    } catch (error) {
+      console.error('[IPC] printer:printReceipt error:', error);
       return { success: false, error: error.message };
     }
   });

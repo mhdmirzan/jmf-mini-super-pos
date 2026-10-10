@@ -1,7 +1,7 @@
 {
   "name": "jmf-mini-super-pos",
   "version": "1.0.0",
-  "description": "Mini Supermarket POS & Billing System",
+  "description": "Buyra — Offline-first POS & billing for retail shops",
   "main": "electron/main/index.js",
   "scripts": {
     "dev:vite": "vite",

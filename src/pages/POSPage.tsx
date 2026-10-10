@@ -2,14 +2,19 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import {
   productService,
-  categoryService,
-  subCategoryService,
   invoiceService,
   settingsService,
   systemService,
   approvalService,
+  billDeletionService,
 } from '../services/api';
-import type { Product, Category, SubCategory, CartItem, Invoice } from '../types';
+import type { Product, CartItem, Invoice } from '../types';
+import {
+  nextBillReference,
+  formatDeletedItemLabel,
+  buildDeletionMessage,
+} from '../utils/posBill';
+import { effectiveWholesalePrice } from '../utils/pricing';
 import ReceiptModal from '../components/ReceiptModal';
 import {
   Button,
@@ -52,16 +57,14 @@ export default function POSPage() {
   const [autoAddOnScan, setAutoAddOnScan] = useState(false);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
-  // Search by Item Code, Category, Sub-Category State
+  // Search by Item Code / Name
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('');
-  const [selectedSubCategory, setSelectedSubCategory] = useState('');
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [subCategories, setSubCategories] = useState<SubCategory[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
+  const [searchHighlightIndex, setSearchHighlightIndex] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchResultsContainerRef = useRef<HTMLDivElement>(null);
   const addToBillButtonRef = useRef<HTMLButtonElement>(null);
-  const wholesalePriceInputRef = useRef<HTMLInputElement>(null);
+  const quantityInputRef = useRef<HTMLInputElement>(null);
 
   // Active Selected Product & Price Configuration
   const [activeProduct, setActiveProduct] = useState<Product | null>(null);
@@ -71,6 +74,10 @@ export default function POSPage() {
   const [activeRetailDiscount, setActiveRetailDiscount] = useState<number>(0);
   const [activeWholesalePrice, setActiveWholesalePrice] = useState<number>(0);
   const [isUpdatingMasterPrice, setIsUpdatingMasterPrice] = useState(false);
+  const [isCatalogPriceModalOpen, setIsCatalogPriceModalOpen] = useState(false);
+  const [catalogEditRetailPrice, setCatalogEditRetailPrice] = useState(0);
+  const [catalogEditRetailDiscount, setCatalogEditRetailDiscount] = useState(0);
+  const [catalogEditWholesalePrice, setCatalogEditWholesalePrice] = useState(0);
 
   // Keep latest active product values in refs for async approval callbacks
   const activeProductRef = useRef(activeProduct);
@@ -96,6 +103,8 @@ export default function POSPage() {
 
   // Cart state
   const [cart, setCart] = useState<CartItem[]>([]);
+  /** Draft bill number shown on open bills (8 digits until sale is completed). */
+  const [currentBillRef, setCurrentBillRef] = useState<string | null>(null);
 
   // Parked Sales (Hold / Recall)
   const [parkedSales, setParkedSales] = useState<ParkedSale[]>([]);
@@ -171,19 +180,17 @@ export default function POSPage() {
     }, 3500);
   };
 
-  // Load initial settings, products, and categories
+  // Load initial settings and products
   const loadInitialData = async () => {
     try {
-      const [sRes, dRes, cRes, pRes] = await Promise.all([
+      const [sRes, dRes, pRes] = await Promise.all([
         settingsService.get(),
         systemService.getDeviceId(),
-        categoryService.list(),
         productService.list({ isActive: true }),
       ]);
 
       if (sRes.success && sRes.settings) setShopSettings(sRes.settings);
       if (dRes.success) setDeviceId(dRes.deviceId);
-      if (cRes.success && cRes.categories) setCategories(cRes.categories);
       if (pRes.success && pRes.products) {
         setAllProducts(pRes.products.filter((p: Product) => p.is_active !== 0));
       }
@@ -197,32 +204,8 @@ export default function POSPage() {
     barcodeInputRef.current?.focus();
   }, []);
 
-  // When selected category changes in Option 2, load sub-categories
-  useEffect(() => {
-    const fetchSubCategories = async () => {
-      if (!selectedCategory) {
-        setSubCategories([]);
-        setSelectedSubCategory('');
-        return;
-      }
-      try {
-        const res = await subCategoryService.list(selectedCategory);
-        if (res.success && res.subCategories) {
-          setSubCategories(res.subCategories);
-        } else {
-          setSubCategories([]);
-        }
-      } catch {
-        setSubCategories([]);
-      }
-      setSelectedSubCategory('');
-    };
-
-    fetchSubCategories();
-  }, [selectedCategory]);
-
   // Set the selected active product and populate its prices
-  const selectProduct = (prod: Product, autoAddImmediately = false) => {
+  const selectProduct = (prod: Product, autoAddImmediately = false, forceQty?: number) => {
     if (prod.is_active === 0) {
       playSound('error');
       showStatus(`Cannot add ${prod.item_name}: Product is inactive`, 'error');
@@ -231,19 +214,18 @@ export default function POSPage() {
 
     const defaultMode = isWholesaleApprovedForBill ? 'WHOLESALE' : 'RETAIL';
     const masterProd = allProducts.find((p) => p.id === prod.id) || prod;
-    
+
     // Check if this product is already in the cart
     const inCart = cart.find((it) => it.product.id === prod.id);
     const resolvedWholesale = (inCart && inCart.priceType === 'WHOLESALE' && inCart.unitPrice > 0)
       ? inCart.unitPrice
-      : ((masterProd.wholesale_price && masterProd.wholesale_price > 0)
-          ? masterProd.wholesale_price
-          : (prod.wholesale_price && prod.wholesale_price > 0
-              ? prod.wholesale_price
-              : Math.round(prod.retail_price * 0.9)));
+      : effectiveWholesalePrice(masterProd);
 
     setActiveProduct(prod);
-    setActiveQty(inCart ? inCart.quantity : 1);
+    // If forceQty is passed (e.g. clicked an item from the invoice), use that quantity;
+    // Otherwise default to 1 so adding it increments the existing invoice line by that quantity!
+    const initialQty = forceQty !== undefined ? forceQty : 1;
+    setActiveQty(initialQty);
     setActivePriceType(defaultMode);
     setActiveRetailPrice(prod.retail_price || 0);
     setActiveRetailDiscount(prod.retail_discount || 0);
@@ -263,8 +245,15 @@ export default function POSPage() {
         true // increment on scan
       );
     } else {
+      // After barcode/search selection, focus quantity so cashier can edit then Enter to bill
       setTimeout(() => {
-        addToBillButtonRef.current?.focus();
+        const qtyInput = quantityInputRef.current;
+        if (qtyInput) {
+          qtyInput.focus();
+          qtyInput.select();
+        } else {
+          addToBillButtonRef.current?.focus();
+        }
       }, 50);
     }
   };
@@ -295,13 +284,19 @@ export default function POSPage() {
     const safeDiscount = enforcedPriceType === 'WHOLESALE' ? 0 : Math.max(0, Math.min(effectiveUnitPrice, unitDiscount));
 
     setCart((prevCart) => {
+      // Find existing item by product ID so each product has exactly ONE row in the bill
       const existingIndex = prevCart.findIndex(
-        (item) => item.product.id === prod.id && item.priceType === enforcedPriceType
+        (item) => item.product.id === prod.id
       );
 
       if (existingIndex > -1) {
         const currentItem = prevCart[existingIndex];
         const newQty = isIncrement ? currentItem.quantity + qty : qty;
+
+        if (newQty <= 0) {
+          showStatus('Quantity must be greater than 0', 'error');
+          return prevCart;
+        }
 
         if (newQty > prod.quantity) {
           playSound('error');
@@ -316,6 +311,7 @@ export default function POSPage() {
         const discount = Math.round(safeDiscount * newQty * 100) / 100;
         const amount = Math.round((effectiveUnitPrice * newQty - discount) * 100) / 100;
 
+        // Update the existing invoice line in-place from left to right without creating a duplicate row
         updated[existingIndex] = {
           ...currentItem,
           priceType: enforcedPriceType,
@@ -358,7 +354,7 @@ export default function POSPage() {
   };
 
   // Add currently active product to bill
-  const handleAddActiveProductToCart = () => {
+  const handleAddActiveProductToCart = (isIncrement: boolean = true) => {
     if (!activeProduct) return;
 
     if (activeProduct.quantity <= 0) {
@@ -371,7 +367,7 @@ export default function POSPage() {
     const unitPrice = effectivePriceType === 'WHOLESALE' ? activeWholesalePrice : activeRetailPrice;
     const unitDiscount = effectivePriceType === 'WHOLESALE' ? 0 : activeRetailDiscount;
 
-    addItemToCartWithValues(activeProduct, activeQty, effectivePriceType, unitPrice, unitDiscount, false);
+    addItemToCartWithValues(activeProduct, activeQty, effectivePriceType, unitPrice, unitDiscount, isIncrement);
 
     // Reset active product state after item enters the cart
     setActiveProduct(null);
@@ -394,12 +390,8 @@ export default function POSPage() {
     const finalPrice = (approvedRate && approvedRate > 0)
       ? approvedRate
       : (activeWholesalePriceRef.current > 0
-          ? activeWholesalePriceRef.current
-          : (masterProd.wholesale_price && masterProd.wholesale_price > 0
-              ? masterProd.wholesale_price
-              : (targetProd.wholesale_price && targetProd.wholesale_price > 0
-                  ? targetProd.wholesale_price
-                  : Math.round(targetProd.retail_price * 0.9))));
+        ? activeWholesalePriceRef.current
+        : effectiveWholesalePrice(masterProd));
 
     setCart((prevCart) => {
       const existingIdx = prevCart.findIndex((it) => it.product.id === targetProd.id);
@@ -469,9 +461,7 @@ export default function POSPage() {
         if (!wPrice || wPrice <= 0) {
           wPrice = item.priceType === 'WHOLESALE' && item.unitPrice > 0
             ? item.unitPrice
-            : (item.product.wholesale_price && item.product.wholesale_price > 0
-                ? item.product.wholesale_price
-                : Math.round(masterProd.retail_price * 0.9));
+            : effectiveWholesalePrice(masterProd);
         }
 
         const numericPrice = Number(wPrice);
@@ -494,17 +484,12 @@ export default function POSPage() {
       const inCart = cart.find((it) => it.product.id === pendingProd.id);
       const wPrice = (inCart && inCart.priceType === 'WHOLESALE' && inCart.unitPrice > 0)
         ? inCart.unitPrice
-        : ((masterProd.wholesale_price && masterProd.wholesale_price > 0)
-            ? masterProd.wholesale_price
-            : (pendingProd.wholesale_price && pendingProd.wholesale_price > 0
-                ? pendingProd.wholesale_price
-                : Math.round(pendingProd.retail_price * 0.9)));
+        : effectiveWholesalePrice(masterProd);
 
       setActivePriceType('WHOLESALE');
       setActiveWholesalePrice(wPrice);
       setTimeout(() => {
-        wholesalePriceInputRef.current?.focus();
-        wholesalePriceInputRef.current?.select();
+        addToBillButtonRef.current?.focus();
       }, 100);
     } else {
       setTimeout(() => {
@@ -600,33 +585,20 @@ export default function POSPage() {
     return () => clearInterval(interval);
   }, [approvalRequestId, approvalStatus]);
 
-  // Barcode Scan / Enter handler
+  // Item code scan / Enter handler
   const handleBarcodeSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const query = barcodeInput.trim();
     if (!query) {
-      // If barcode input is empty and an active product is loaded, pressing Enter immediately adds it to the cart
+      // If scan input is empty and an active product is loaded, pressing Enter immediately adds it to the cart
       if (activeProduct && activeProduct.quantity > 0) {
-        handleAddActiveProductToCart();
+        handleAddActiveProductToCart(true);
       }
       return;
     }
 
-    // Search by Barcode first
-    let res = await productService.getByBarcode(query);
-    if (res.success && res.product) {
-      if (res.product.is_active === 0) {
-        playSound('error');
-        showStatus(`Product "${res.product.item_name}" is inactive`, 'error');
-        return;
-      }
-      selectProduct(res.product, autoAddOnScan);
-      setBarcodeInput('');
-      return;
-    }
-
-    // Fallback: search by Item Code
-    res = await productService.getByItemCode(query);
+    // Lookup by item code (scanners type into this field)
+    let res = await productService.getByItemCode(query);
     if (res.success && res.product) {
       if (res.product.is_active === 0) {
         playSound('error');
@@ -653,7 +625,15 @@ export default function POSPage() {
     showStatus(`Product not found: "${query}"`, 'error');
   };
 
-  // Admin Only: Save updated prices to SQLite master catalog
+  const openCatalogPriceModal = () => {
+    if (!isAdminOrSuper || !activeProduct) return;
+    setCatalogEditRetailPrice(activeRetailPrice);
+    setCatalogEditRetailDiscount(activeRetailDiscount);
+    setCatalogEditWholesalePrice(activeWholesalePrice);
+    setIsCatalogPriceModalOpen(true);
+  };
+
+  // Admin Only: Save updated prices to SQLite master catalog (via modal)
   const handleSaveMasterPrice = async () => {
     if (!isAdminOrSuper || !activeProduct) return;
 
@@ -661,25 +641,29 @@ export default function POSPage() {
     try {
       const res = await productService.update({
         id: activeProduct.id,
-        retailPrice: activeRetailPrice,
-        retailDiscount: activeRetailDiscount,
-        wholesalePrice: activeWholesalePrice,
+        retailPrice: catalogEditRetailPrice,
+        retailDiscount: catalogEditRetailDiscount,
+        wholesalePrice: catalogEditWholesalePrice,
         updatedBy: user?.id,
       });
 
       if (res.success) {
         playSound('success');
         showStatus('Product prices updated in catalog', 'success');
+        setActiveRetailPrice(catalogEditRetailPrice);
+        setActiveRetailDiscount(catalogEditRetailDiscount);
+        setActiveWholesalePrice(catalogEditWholesalePrice);
         const updatedProd: Product = {
           ...activeProduct,
-          retail_price: activeRetailPrice,
-          retail_discount: activeRetailDiscount,
-          wholesale_price: activeWholesalePrice,
+          retail_price: catalogEditRetailPrice,
+          retail_discount: catalogEditRetailDiscount,
+          wholesale_price: catalogEditWholesalePrice,
         };
         setActiveProduct(updatedProd);
         setAllProducts((prev) =>
           prev.map((p) => (p.id === activeProduct.id ? updatedProd : p))
         );
+        setIsCatalogPriceModalOpen(false);
       } else {
         playSound('error');
         showStatus(res.error || 'Failed to update catalog prices', 'error');
@@ -696,26 +680,81 @@ export default function POSPage() {
   const filteredSearchResults = useMemo(() => {
     let list = allProducts.filter((p) => p.is_active !== 0);
 
-    if (selectedCategory) {
-      list = list.filter((p) => p.category_id === selectedCategory);
-    }
-
-    if (selectedSubCategory) {
-      list = list.filter((p) => p.sub_category_id === selectedSubCategory);
-    }
-
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       list = list.filter(
         (p) =>
           p.item_name.toLowerCase().includes(q) ||
-          p.item_code.toLowerCase().includes(q) ||
-          (p.barcode && p.barcode.toLowerCase().includes(q))
+          p.item_code.toLowerCase().includes(q)
       );
     }
 
     return list.slice(0, 30);
-  }, [allProducts, selectedCategory, selectedSubCategory, searchQuery]);
+  }, [allProducts, searchQuery]);
+
+  // Reset / clamp keyboard highlight when search results change
+  useEffect(() => {
+    setSearchHighlightIndex(0);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (filteredSearchResults.length === 0) {
+      setSearchHighlightIndex(0);
+      return;
+    }
+    setSearchHighlightIndex((prev) =>
+      Math.min(prev, filteredSearchResults.length - 1)
+    );
+  }, [filteredSearchResults.length]);
+
+  // Keep highlighted search row visible while arrow-navigating
+  useEffect(() => {
+    if (entryMode !== 'SEARCH') return;
+    const row = searchResultsContainerRef.current?.querySelector(
+      `[data-search-row-index="${searchHighlightIndex}"]`
+    ) as HTMLElement | null;
+    row?.scrollIntoView({ block: 'nearest' });
+  }, [searchHighlightIndex, entryMode]);
+
+  useEffect(() => {
+    if (cart.length > 0 && !currentBillRef) {
+      setCurrentBillRef(nextBillReference());
+    }
+  }, [cart.length, currentBillRef]);
+
+  const resetDraftBillReference = () => setCurrentBillRef(null);
+
+  const recordCartItemRemoval = async (item: CartItem) => {
+    const billRef = currentBillRef || nextBillReference();
+    if (!currentBillRef) setCurrentBillRef(billRef);
+
+    const label = formatDeletedItemLabel(item);
+    const message = buildDeletionMessage(label, billRef);
+
+    try {
+      await billDeletionService.create({
+        billReference: billRef,
+        productId: item.product.id,
+        productName: item.product.item_name,
+        itemCode: item.product.item_code,
+        quantity: item.quantity,
+        unit: item.product.unit || 'PCS',
+        unitPrice: item.unitPrice,
+        lineAmount: item.amount,
+        cashierId: user?.id,
+        cashierName: user?.fullName || user?.username,
+        deviceId,
+        message,
+      });
+    } catch {
+      // Still show cashier feedback even if persistence fails
+    }
+
+    showStatus(message, 'warning');
+    window.dispatchEvent(
+      new CustomEvent('pos:bill-item-deleted', { detail: { message, billReference: billRef } })
+    );
+  };
 
   // Calculate cart totals
   const subtotal = Math.round(cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0) * 100) / 100;
@@ -733,11 +772,6 @@ export default function POSPage() {
   // Cart operations
   const updateCartQuantity = (index: number, newQty: number) => {
     if (newQty <= 0) {
-      if (!isAdminOrSuper) {
-        playSound('error');
-        showStatus('Only Admin or Super Admin can remove items from the bill', 'error');
-        return;
-      }
       removeCartItem(index);
       return;
     }
@@ -784,12 +818,19 @@ export default function POSPage() {
   };
 
   const removeCartItem = (index: number) => {
-    if (!isAdminOrSuper) {
-      playSound('error');
-      showStatus('Only Admin or Super Admin can remove items from the bill', 'error');
-      return;
+    const item = cart[index];
+    if (!item) return;
+
+    void recordCartItemRemoval(item);
+    playSound('scan');
+    setCart((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      if (next.length === 0) resetDraftBillReference();
+      return next;
+    });
+    if (activeProduct?.id === item.product.id) {
+      setActiveProduct(null);
     }
-    setCart((prev) => prev.filter((_, i) => i !== index));
   };
 
   const clearCart = () => {
@@ -801,6 +842,7 @@ export default function POSPage() {
     }
     if (window.confirm('Clear all items from current bill?')) {
       setCart([]);
+      resetDraftBillReference();
       setCashReceived('');
       setIsWholesaleApprovedForBill(false);
       setApprovedByName('');
@@ -829,6 +871,7 @@ export default function POSPage() {
     };
     setParkedSales((prev) => [newParked, ...prev]);
     setCart([]);
+    resetDraftBillReference();
     setCashReceived('');
     setIsWholesaleApprovedForBill(false);
     setApprovedByName('');
@@ -900,27 +943,34 @@ export default function POSPage() {
           cash_received: result.invoice.cashReceived,
           cash_change: result.invoice.cashChange,
           status: 'COMPLETED',
+          price_type: isWholesaleApprovedForBill ? 'WHOLESALE' : 'RETAIL',
           sync_status: 'PENDING',
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          items: result.invoice.items.map((it: any) => ({
-            id: it.productId,
-            invoice_id: result.invoice.id,
-            product_id: it.productId,
-            item_code: it.itemCode,
-            item_name: it.itemName,
-            unit_price: it.unitPrice,
-            quantity: it.quantity,
-            unit_discount: it.unitDiscount,
-            discount: it.discount,
-            amount: it.amount,
-            created_at: new Date().toISOString(),
-          })),
+          items: result.invoice.items.map((it: any) => {
+            const originalCartItem = cart.find((c) => c.product.id === it.productId);
+            const itemPriceType = (originalCartItem?.priceType || (isWholesaleApprovedForBill ? 'WHOLESALE' : 'RETAIL')) as 'RETAIL' | 'WHOLESALE';
+            return {
+              id: it.productId,
+              invoice_id: result.invoice.id,
+              product_id: it.productId,
+              item_code: it.itemCode,
+              item_name: it.itemName,
+              unit_price: it.unitPrice,
+              quantity: it.quantity,
+              unit_discount: it.unitDiscount,
+              discount: it.discount,
+              amount: it.amount,
+              price_type: itemPriceType,
+              created_at: new Date().toISOString(),
+            };
+          }),
         };
 
         setCompletedInvoice(fullInvoice);
         setIsReceiptOpen(true);
         setCart([]);
+        resetDraftBillReference();
         setCashReceived('');
         setIsWholesaleApprovedForBill(false);
         setApprovedByName('');
@@ -945,6 +995,36 @@ export default function POSPage() {
   // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Arrow navigation through Item Search results (while search field is focused)
+      if (entryMode === 'SEARCH' && filteredSearchResults.length > 0) {
+        const target = e.target as HTMLElement;
+        const inSearchField = target === searchInputRef.current;
+        const inSearchResults = Boolean(target?.closest?.('[data-search-results-table]'));
+
+        if (inSearchField || inSearchResults) {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setSearchHighlightIndex((prev) =>
+              Math.min(prev + 1, filteredSearchResults.length - 1)
+            );
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setSearchHighlightIndex((prev) => Math.max(prev - 1, 0));
+            return;
+          }
+          if (e.key === 'Enter') {
+            const highlighted = filteredSearchResults[searchHighlightIndex];
+            if (highlighted) {
+              e.preventDefault();
+              selectProduct(highlighted);
+              return;
+            }
+          }
+        }
+      }
+
       // 1. Enter: If active product is loaded, add to bill immediately
       if (e.key === 'Enter') {
         if (isReceiptOpen || isParkedModalOpen) return;
@@ -954,8 +1034,12 @@ export default function POSPage() {
         if (target === barcodeInputRef.current && barcodeInput.trim()) {
           return;
         }
-        // If in search input with query typed, let search input handle it
-        if (target === searchInputRef.current && searchQuery.trim()) {
+        // Quantity field handles Enter itself (add to bill)
+        if (target === quantityInputRef.current) {
+          return;
+        }
+        // Search Enter handled above for highlighted product
+        if (target === searchInputRef.current) {
           return;
         }
         // If inside a textarea or cash tender input, don't intercept
@@ -1004,6 +1088,8 @@ export default function POSPage() {
     activeProduct,
     barcodeInput,
     searchQuery,
+    searchHighlightIndex,
+    filteredSearchResults,
     activeQty,
     activePriceType,
     activeRetailPrice,
@@ -1028,7 +1114,7 @@ export default function POSPage() {
   const lineItemTotal = Math.round(selectedNetUnitPrice * activeQty * 100) / 100;
 
   return (
-    <div className="h-full flex flex-col p-4 select-none overflow-hidden gap-3 bg-[var(--pos-bg)]">
+    <div className="h-full flex flex-col pt-2 px-6 pb-6 select-none overflow-hidden gap-2 bg-[var(--pos-bg)]">
       {/* Toast Alert Banner */}
       {toast && (
         <Toast
@@ -1039,7 +1125,7 @@ export default function POSPage() {
       )}
 
       {/* POS Action Bar */}
-      <div className="pos-card px-4 py-2.5 flex items-center justify-between gap-3 shrink-0">
+      <div className="flex items-center justify-between gap-3 shrink-0 py-1">
         <div className="flex items-center gap-2">
           {/* Mode switch buttons */}
           <div className="inline-flex rounded border border-[var(--pos-border)] p-0.5 bg-[var(--pos-bg-subtle)]">
@@ -1135,15 +1221,7 @@ export default function POSPage() {
           {/* SEARCH / SCAN PANEL */}
           {entryMode === 'BARCODE' ? (
             /* Option 1: Barcode Scan Input */
-            <div className="pos-card p-4 shrink-0">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-[var(--pos-text)]">
-                  Scan Barcode or Enter Item Code
-                </span>
-                <span className="text-[11px] text-[var(--pos-text-muted)]">
-                  USB / Laser Scanner Ready
-                </span>
-              </div>
+            <div className="shrink-0 py-1">
               <form onSubmit={handleBarcodeSubmit} className="flex gap-2 items-stretch">
                 <div className="relative flex-1 flex">
                   <input
@@ -1151,7 +1229,8 @@ export default function POSPage() {
                     type="text"
                     value={barcodeInput}
                     onChange={(e) => setBarcodeInput(e.target.value)}
-                    className="w-full h-[42px] px-3 pr-8 text-sm font-semibold font-mono text-slate-900 bg-white border border-slate-300 rounded-lg transition-colors focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600"
+                    placeholder="Scan / Enter Item Code"
+                    className="w-full h-[42px] px-3 pr-8 text-sm font-semibold font-mono text-slate-900 bg-white border border-slate-300 rounded-lg transition-colors focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 placeholder:font-sans placeholder:font-normal placeholder:text-slate-400"
                     autoFocus
                   />
                   {barcodeInput && (
@@ -1171,9 +1250,9 @@ export default function POSPage() {
             </div>
           ) : (
             /* Option 2: Search Filters & Product Results Table */
-            <div className="pos-card p-4 flex flex-col gap-3 shrink-0">
-              <div className="grid grid-cols-12 gap-2">
-                <div className="col-span-5">
+            <div className="pos-card p-4 flex flex-col gap-3 flex-[1.3] min-h-0 overflow-hidden">
+              <div className="grid grid-cols-12 gap-2 shrink-0">
+                <div className="col-span-12">
                   <Input
                     ref={searchInputRef}
                     value={searchQuery}
@@ -1182,31 +1261,14 @@ export default function POSPage() {
                     autoFocus
                   />
                 </div>
-                <div className="col-span-4">
-                  <Select
-                    value={selectedCategory}
-                    onChange={(e) => setSelectedCategory(e.target.value)}
-                    options={[
-                      { value: '', label: `All Categories (${categories.length})` },
-                      ...categories.map((c) => ({ value: c.id, label: c.name })),
-                    ]}
-                  />
-                </div>
-                <div className="col-span-3">
-                  <Select
-                    value={selectedSubCategory}
-                    disabled={!selectedCategory || subCategories.length === 0}
-                    onChange={(e) => setSelectedSubCategory(e.target.value)}
-                    options={[
-                      { value: '', label: 'All Sub-Cats' },
-                      ...subCategories.map((sc) => ({ value: sc.id, label: sc.name })),
-                    ]}
-                  />
-                </div>
               </div>
 
-              {/* Compact Search Results Table */}
-              <div className="border border-[var(--pos-border)] rounded max-h-48 overflow-y-auto bg-white">
+              {/* Search results table — arrow keys move highlight; Enter selects */}
+              <div
+                ref={searchResultsContainerRef}
+                data-search-results-table
+                className="border border-[var(--pos-border)] rounded flex-1 min-h-[15.6rem] overflow-y-auto bg-white"
+              >
                 {filteredSearchResults.length === 0 ? (
                   <div className="py-6 text-center text-xs text-[var(--pos-text-muted)]">
                     No products match the search criteria.
@@ -1217,7 +1279,6 @@ export default function POSPage() {
                       <TableRow>
                         <TableHead>Code</TableHead>
                         <TableHead>Product</TableHead>
-                        <TableHead>Category</TableHead>
                         <TableHead align="right">Retail</TableHead>
                         <TableHead align="right">Wholesale</TableHead>
                         <TableHead align="center">Stock</TableHead>
@@ -1225,14 +1286,19 @@ export default function POSPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {filteredSearchResults.map((prod) => {
+                      {filteredSearchResults.map((prod, index) => {
                         const isSelected = activeProduct?.id === prod.id;
+                        const isHighlighted = index === searchHighlightIndex;
                         return (
                           <TableRow
                             key={prod.id}
-                            selected={isSelected}
-                            onClick={() => selectProduct(prod)}
-                            className="cursor-pointer"
+                            data-search-row-index={index}
+                            selected={isSelected || isHighlighted}
+                            onClick={() => {
+                              setSearchHighlightIndex(index);
+                              selectProduct(prod);
+                            }}
+                            className={`cursor-pointer ${isHighlighted && !isSelected ? 'ring-1 ring-inset ring-blue-400 bg-blue-50' : ''}`}
                           >
                             <TableCell monospace className="font-semibold text-xs text-[var(--pos-text-muted)]">
                               {prod.item_code}
@@ -1240,35 +1306,30 @@ export default function POSPage() {
                             <TableCell className="font-semibold text-[var(--pos-text)] truncate max-w-[160px]">
                               {prod.item_name}
                             </TableCell>
-                            <TableCell className="text-[var(--pos-text-muted)] text-xs truncate max-w-[120px]">
-                              {prod.category_name || '-'}
-                            </TableCell>
                             <TableCell align="right" monospace className="font-semibold">
                               Rs. {prod.retail_price.toFixed(2)}
                             </TableCell>
                             <TableCell align="right" monospace className="text-[var(--pos-text-muted)]">
-                              {prod.wholesale_price ? `Rs. ${prod.wholesale_price.toFixed(2)}` : '-'}
+                              {`Rs. ${effectiveWholesalePrice(prod).toFixed(2)}`}
                             </TableCell>
                             <TableCell align="center">
                               <div className="flex flex-col items-center gap-0.5">
                                 <span
-                                  className={`text-xs font-mono font-bold ${
-                                    prod.quantity <= 0
-                                      ? 'text-[var(--pos-danger)]'
-                                      : prod.quantity <= prod.minimum_quantity
+                                  className={`text-xs font-mono font-bold ${prod.quantity <= 0
+                                    ? 'text-[var(--pos-danger)]'
+                                    : prod.quantity <= prod.minimum_quantity
                                       ? 'text-amber-700'
                                       : 'text-[var(--pos-text)]'
-                                  }`}
+                                    }`}
                                 >
                                   {(prod.unit || '').toUpperCase() === 'KG'
                                     ? Number(prod.quantity).toFixed(3)
                                     : Math.floor(prod.quantity)}
                                 </span>
-                                <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border font-mono uppercase ${
-                                  (prod.unit || '').toUpperCase() === 'KG'
-                                    ? 'bg-amber-100 text-amber-900 border-amber-300'
-                                    : 'bg-blue-100 text-blue-900 border-blue-300'
-                                }`}>
+                                <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border font-mono uppercase ${(prod.unit || '').toUpperCase() === 'KG'
+                                  ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                  : 'bg-blue-100 text-blue-900 border-blue-300'
+                                  }`}>
                                   {(prod.unit || '').toUpperCase() === 'KG' ? 'kg' : 'pcs'}
                                 </span>
                               </div>
@@ -1296,42 +1357,37 @@ export default function POSPage() {
           )}
 
           {/* PRODUCT DETAILS & PRICING PANEL */}
-          <div className="pos-card p-4 flex-1 flex flex-col justify-between overflow-y-auto">
+          <div className="pos-card p-4 flex-1 min-h-0 flex flex-col justify-between overflow-y-auto">
             {!activeProduct ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-6">
                 <EmptyState
                   title="No Product Selected"
-                  description="Scan a barcode or search to load item pricing, inventory, and billing options."
+                  description="Scan or search an item code to load pricing, inventory, and billing options."
                 />
               </div>
             ) : (
               <div className="flex flex-col h-full justify-between gap-4">
                 {/* Header Information */}
                 <div>
-                  <div className="flex items-start justify-between gap-3 border-b border-[var(--pos-border)] pb-3">
-                    <div>
-                      <div className="flex items-center gap-2">
+                  <div className="flex items-start justify-between gap-3 border-b border-[var(--pos-border)] pb-2">
+                    <div className="flex flex-col gap-3 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <h2 className="text-xl font-bold text-[var(--pos-text)] tracking-tight">
                           {activeProduct.item_name}
                         </h2>
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase font-mono border ${
-                          (activeProduct.unit || '').toUpperCase() === 'KG'
-                            ? 'bg-amber-100 text-amber-900 border-amber-300'
-                            : 'bg-blue-100 text-blue-900 border-blue-300'
-                        }`}>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase font-mono border ${(activeProduct.unit || '').toUpperCase() === 'KG'
+                          ? 'bg-amber-100 text-amber-900 border-amber-300'
+                          : 'bg-blue-100 text-blue-900 border-blue-300'
+                          }`}>
                           {(activeProduct.unit || '').toUpperCase() === 'KG' ? 'Kilograms' : 'Pieces'}
                         </span>
                       </div>
-                      <div className="text-xs text-[var(--pos-text-muted)] mt-1 flex items-center gap-3">
+                      <div className="text-xs text-[var(--pos-text-muted)] flex items-center gap-3 flex-wrap">
                         <span>Code: <strong className="font-mono text-[var(--pos-text)]">{activeProduct.item_code}</strong></span>
-                        {activeProduct.barcode && (
-                          <span>Barcode: <strong className="font-mono text-[var(--pos-text)]">{activeProduct.barcode}</strong></span>
-                        )}
-                        <span>Category: <strong className="text-[var(--pos-text)]">{activeProduct.category_name || 'General'}</strong>{activeProduct.sub_category_name ? ` / ${activeProduct.sub_category_name}` : ''}</span>
                       </div>
                     </div>
 
-                    <div className="text-right shrink-0">
+                    <div className="text-right shrink-0 flex flex-col gap-2">
                       <div className="text-xs text-[var(--pos-text-muted)]">Current Stock</div>
                       <div className={`text-base font-mono font-bold ${activeProduct.quantity <= 0
                         ? 'text-[var(--pos-danger)]'
@@ -1350,101 +1406,93 @@ export default function POSPage() {
 
                   {/* Pricing Matrix */}
                   <div className="mt-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-semibold text-[var(--pos-text-muted)] uppercase tracking-wider">
-                        Pricing Details
-                      </span>
-                      {isAdminOrSuper && (
+                    {isAdminOrSuper && (
+                      <div className="flex justify-end mb-2">
                         <button
                           type="button"
-                          onClick={handleSaveMasterPrice}
+                          onClick={openCatalogPriceModal}
                           disabled={isUpdatingMasterPrice}
                           className="text-xs text-[var(--pos-accent)] hover:underline font-semibold cursor-pointer"
                         >
-                          {isUpdatingMasterPrice ? 'Saving...' : 'Update Catalog Price'}
+                          Update Catalog Price
                         </button>
-                      )}
-                    </div>
+                      </div>
+                    )}
 
-                    <div className="grid grid-cols-3 gap-2">
-                      {/* Retail Price */}
-                      <div className="p-2.5 bg-[var(--pos-bg-subtle)] rounded border border-[var(--pos-border)]">
-                        <span className="text-[11px] text-[var(--pos-text-muted)] block">Retail Price</span>
-                        {isAdminOrSuper ? (
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.5"
-                            value={activeRetailPrice}
-                            onChange={(e) => setActiveRetailPrice(parseFloat(e.target.value) || 0)}
-                            className="w-full mt-1 px-2 py-1 text-sm font-mono font-bold border border-[var(--pos-border)] rounded bg-white"
-                          />
-                        ) : (
-                          <span className="font-mono font-bold text-sm text-[var(--pos-text)]">
-                            Rs. {activeRetailPrice.toFixed(2)}
-                          </span>
-                        )}
+                    <div className="grid grid-cols-3 gap-5">
+                      {/* Retail Price — same visual weight for cashier / admin / super admin */}
+                      <div className="p-4 bg-[var(--pos-bg-subtle)] rounded-lg border border-[var(--pos-border)] min-h-[108px] flex flex-col justify-between">
+                        <span className="text-[11px] text-[var(--pos-text-muted)] block mb-2">Retail Price</span>
+                        <div className="w-full px-3 py-3 min-h-[48px] flex items-center text-base font-mono font-bold border border-[var(--pos-border)] rounded-lg bg-white text-[var(--pos-text)]">
+                          Rs. {activeRetailPrice.toFixed(2)}
+                        </div>
                       </div>
 
                       {/* Retail Discount */}
-                      <div className="p-2.5 bg-[var(--pos-bg-subtle)] rounded border border-[var(--pos-border)]">
-                        <span className="text-[11px] text-[var(--pos-text-muted)] block">Retail Discount</span>
-                        {isAdminOrSuper ? (
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.5"
-                            value={activeRetailDiscount}
-                            onChange={(e) => setActiveRetailDiscount(parseFloat(e.target.value) || 0)}
-                            className="w-full mt-1 px-2 py-1 text-sm font-mono font-bold border border-[var(--pos-border)] rounded bg-white text-[var(--pos-danger)]"
-                          />
-                        ) : (
-                          <span className="font-mono font-bold text-sm text-[var(--pos-danger)]">
-                            Rs. {activeRetailDiscount.toFixed(2)}
-                          </span>
-                        )}
+                      <div className="p-4 bg-[var(--pos-bg-subtle)] rounded-lg border border-[var(--pos-border)] min-h-[108px] flex flex-col justify-between">
+                        <span className="text-[11px] text-[var(--pos-text-muted)] block mb-2">Retail Discount</span>
+                        <div className="w-full px-3 py-3 min-h-[48px] flex items-center text-base font-mono font-bold border border-[var(--pos-border)] rounded-lg bg-white text-[var(--pos-danger)]">
+                          Rs. {activeRetailDiscount.toFixed(2)}
+                        </div>
                       </div>
 
                       {/* Wholesale Price */}
-                      <div className="p-2.5 bg-[var(--pos-bg-subtle)] rounded border border-[var(--pos-border)]">
-                        <div className="flex justify-between items-center mb-1">
+                      <div className="p-4 bg-[var(--pos-bg-subtle)] rounded-lg border border-[var(--pos-border)] min-h-[108px] flex flex-col justify-between">
+                        <div className="flex justify-between items-center gap-2 mb-2">
                           <span className="text-[11px] text-[var(--pos-text-muted)] block">Wholesale Price</span>
                           {!isWholesaleApprovedForBill ? (
-                            <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1 rounded">Requires Verification</span>
+                            <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1 rounded shrink-0">Requires Verification</span>
                           ) : (
-                            <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1 rounded">Verified Wholesale</span>
+                            <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1 rounded shrink-0">Verified Wholesale</span>
                           )}
                         </div>
-                        {isWholesaleApprovedForBill ? (
-                          <input
-                            ref={wholesalePriceInputRef}
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={activeWholesalePrice || ''}
-                            onChange={(e) => {
-                              const val = parseFloat(e.target.value) || 0;
-                              setActiveWholesalePrice(Math.max(0, val));
-                            }}
-                            className="w-full px-2 py-1 text-sm font-mono font-bold border border-emerald-300 rounded bg-white text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-500"
-                            placeholder="0.00"
-                          />
-                        ) : (
-                          <span className="font-mono font-bold text-sm text-slate-400 block mt-1">
-                            Rs. {activeWholesalePrice.toFixed(2)}
-                          </span>
-                        )}
+                        <div
+                          className={`w-full px-3 py-3 min-h-[48px] flex items-center text-base font-mono font-bold border rounded-lg bg-white ${
+                            isWholesaleApprovedForBill
+                              ? 'border-emerald-300 text-emerald-700'
+                              : 'border-emerald-300 text-slate-400'
+                          }`}
+                        >
+                          Rs. {activeWholesalePrice.toFixed(2)}
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
+
+                {/* Already In Bill Alert Banner */}
+                {activeProduct && cart.some((it) => it.product.id === activeProduct.id) && (() => {
+                  const existingItem = cart.find((it) => it.product.id === activeProduct.id)!;
+                  const lineIdx = cart.findIndex((it) => it.product.id === activeProduct.id);
+                  return (
+                    <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between text-xs text-blue-950 mt-1">
+                      <div className="flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-bold">ℹ</span>
+                        <div>
+                          <span className="font-bold">Already in Bill: </span>
+                          <span className="font-mono font-bold text-blue-800">
+                            {(activeProduct.unit || '').toUpperCase() === 'KG'
+                              ? `${Number(existingItem.quantity).toFixed(3)} kg`
+                              : `${Math.floor(existingItem.quantity)} pcs`}
+                          </span>
+                          <span className="text-blue-700 ml-1.5 font-medium">
+                            (Line Amount: Rs. {existingItem.amount.toFixed(2)})
+                          </span>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded border border-blue-300">
+                        Invoice Line #{lineIdx + 1}
+                      </span>
+                    </div>
+                  );
+                })()}
 
                 {/* Add to Bill Action */}
                 <div className="p-3 bg-[var(--pos-bg-subtle)] rounded border border-[var(--pos-border)] flex items-center justify-between gap-4">
                   {/* Unit Price Display */}
                   <div className="flex flex-col gap-1">
                     <span className="text-[11px] font-semibold text-[var(--pos-text-muted)] uppercase">
-                      {isWholesaleApprovedForBill ? 'Wholesale Price' : 'Retail Price'}
+                      {isWholesaleApprovedForBill ? 'Wholesale Price' : 'Retail Price (Discounted)'}
                     </span>
                     <div className="flex items-center gap-2">
                       <span className="text-base font-mono font-bold text-[var(--pos-text)]">
@@ -1462,33 +1510,54 @@ export default function POSPage() {
                       Quantity ({(activeProduct.unit || '').toUpperCase() === 'KG' ? 'Kilograms' : 'Pieces'})
                     </span>
                     <QuantityControl
+                      inputRef={quantityInputRef}
                       value={activeQty}
                       min={(activeProduct.unit || '').toUpperCase() === 'KG' ? 0.001 : 1}
                       max={activeProduct.quantity}
                       step={(activeProduct.unit || '').toUpperCase() === 'KG' ? 0.25 : 1}
                       unit={activeProduct.unit}
                       onChange={setActiveQty}
-                      onEnter={handleAddActiveProductToCart}
+                      onEnter={() => handleAddActiveProductToCart(true)}
                     />
                   </div>
 
-                  {/* Line Total & Add Button */}
+                  {/* Line Total & Add / Update Buttons */}
                   <div className="flex items-center gap-3">
                     <div className="text-right">
-                      <span className="text-[11px] text-[var(--pos-text-muted)] block">Item Total</span>
+                      <span className="text-[11px] text-[var(--pos-text-muted)] block">
+                        {cart.some((it) => it.product.id === activeProduct.id) ? 'Selected Qty Total' : 'Item Total'}
+                      </span>
                       <PriceDisplay amount={lineItemTotal} size="lg" className="font-bold text-[var(--pos-text)]" />
                     </div>
 
-                    <Button
-                      ref={addToBillButtonRef}
-                      variant="primary"
-                      size="lg"
-                      onClick={handleAddActiveProductToCart}
-                      disabled={activeProduct.quantity <= 0}
-                      shortcut="Enter"
-                    >
-                      {cart.some(it => it.product.id === activeProduct.id && it.priceType === activePriceType) ? 'Update Bill Item' : 'Add to Bill'}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      {cart.some((it) => it.product.id === activeProduct.id) ? (
+                        <>
+                          <Button
+                            ref={addToBillButtonRef}
+                            variant="primary"
+                            size="lg"
+                            onClick={() => handleAddActiveProductToCart(true)}
+                            disabled={activeProduct.quantity <= 0}
+                            shortcut="Enter"
+                            title="Add this quantity to the existing invoice line"
+                          >
+                            Add to Bill
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          ref={addToBillButtonRef}
+                          variant="primary"
+                          size="lg"
+                          onClick={() => handleAddActiveProductToCart(false)}
+                          disabled={activeProduct.quantity <= 0}
+                          shortcut="Enter"
+                        >
+                          Add to Bill
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1506,6 +1575,18 @@ export default function POSPage() {
                 <span className="text-xs font-bold text-[var(--pos-text)] uppercase tracking-wider">
                   Current Bill
                 </span>
+                {currentBillRef && (
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-white border border-[var(--pos-border)] text-[var(--pos-text)]">
+                    No. {currentBillRef}
+                  </span>
+                )}
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded font-mono uppercase tracking-wide border ${
+                  isWholesaleApprovedForBill
+                    ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                    : 'bg-blue-100 text-blue-900 border-blue-300'
+                }`}>
+                  {isWholesaleApprovedForBill ? 'WHOLESALE BILL' : 'RETAIL BILL'}
+                </span>
                 <span className="text-xs px-2 py-0.5 rounded bg-[var(--pos-border)] text-[var(--pos-text-muted)] font-mono font-semibold">
                   {cart.reduce((s, it) => s + it.quantity, 0).toLocaleString(undefined, { maximumFractionDigits: 3 })} items
                 </span>
@@ -1515,11 +1596,10 @@ export default function POSPage() {
                   <button
                     type="button"
                     onClick={handleWholesaleBillClick}
-                    className={`px-2.5 py-1 text-xs font-bold rounded flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs ${
-                      approvalStatus === 'PENDING'
-                        ? 'bg-amber-100 text-amber-900 border border-amber-400 animate-pulse'
-                        : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300'
-                    }`}
+                    className={`px-2.5 py-1 text-xs font-bold rounded flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs ${approvalStatus === 'PENDING'
+                      ? 'bg-amber-100 text-amber-900 border border-amber-400 animate-pulse'
+                      : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300'
+                      }`}
                     title={approvalStatus === 'PENDING' ? 'Waiting for Admin approval...' : (!isAdminOrSuper ? 'Request Wholesale Rate Approval for this bill' : 'Wholesale Mode')}
                   >
                     {approvalStatus === 'PENDING' ? (
@@ -1563,7 +1643,7 @@ export default function POSPage() {
                 <div className="h-full flex flex-col items-center justify-center p-6">
                   <EmptyState
                     title="Cart is empty"
-                    description="Scan a barcode or select an item from the left to start this bill."
+                    description="Scan an item code or select an item from the left to start this bill."
                   />
                 </div>
               ) : (
@@ -1571,8 +1651,8 @@ export default function POSPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Product</TableHead>
-                      <TableHead align="center" className="w-28">Qty & Unit</TableHead>
-                      <TableHead align="right">Price</TableHead>
+                      <TableHead align="center" className="w-24">Qty & Unit</TableHead>
+                      <TableHead align="right">Unit Price</TableHead>
                       <TableHead align="right">Amount</TableHead>
                       <TableHead align="center" className="w-8"></TableHead>
                     </TableRow>
@@ -1580,83 +1660,46 @@ export default function POSPage() {
                   <TableBody>
                     {cart.map((item, index) => (
                       <TableRow
-                        key={`${item.product.id}-${item.priceType}`}
-                        onClick={() => selectProduct(item.product)}
-                        className="hover:bg-[var(--pos-bg-subtle)] cursor-pointer"
-                        title="Click to view/edit item"
+                        key={item.product.id}
+                        onClick={() => selectProduct(item.product, false, item.quantity)}
+                        className="hover:bg-[var(--pos-bg-subtle)] cursor-pointer select-none"
+                        title="Click to view details / adjust quantity in left product panel"
                       >
+                        {/* Read-Only Product Details */}
                         <TableCell>
                           <div className="font-semibold text-xs text-[var(--pos-text)] leading-tight">
                             {item.product.item_name}
                           </div>
                           <div className="text-[11px] text-[var(--pos-text-muted)] font-mono mt-0.5 flex items-center gap-2">
                             <span>{item.product.item_code}</span>
-                            {item.priceType === 'WHOLESALE' && (
-                              <span className="uppercase text-[10px] font-bold px-1.5 py-0.5 rounded font-mono bg-amber-100 text-amber-900 border border-amber-300">
-                                Wholesale
-                              </span>
-                            )}
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase font-mono ${
-                              (item.product.unit || '').toUpperCase() === 'KG'
-                                ? 'bg-amber-100 text-amber-800 border-amber-200'
-                                : 'bg-blue-100 text-blue-800 border border-blue-200'
+                            <span className={`uppercase text-[10px] font-bold px-1.5 py-0.5 rounded font-mono border ${
+                              item.priceType === 'WHOLESALE'
+                                ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                                : 'bg-slate-100 text-slate-700 border-slate-300'
+                            }`}>
+                              {item.priceType === 'WHOLESALE' ? 'Wholesale' : 'Retail'}
+                            </span>
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase font-mono ${(item.product.unit || '').toUpperCase() === 'KG'
+                              ? 'bg-amber-100 text-amber-800 border-amber-200'
+                              : 'bg-blue-100 text-blue-800 border border-blue-200'
                               }`}>
                               {(item.product.unit || '').toUpperCase() === 'KG' ? 'Kilograms' : 'Pieces'}
                             </span>
                             {item.unitDiscount > 0 && (
                               <span className="text-[var(--pos-danger)] font-semibold">
-                                -Rs. {item.unitDiscount}
+                                -Rs. {item.unitDiscount.toFixed(2)}
                               </span>
                             )}
-                            {isAdminOrSuper && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setActiveCartDiscountIndex(
-                                    activeCartDiscountIndex === index ? null : index
-                                  )
-                                }
-                                className="text-[10px] text-[var(--pos-accent)] hover:underline font-semibold cursor-pointer"
-                              >
-                                {activeCartDiscountIndex === index ? 'Done' : 'Disc'}
-                              </button>
-                            )}
                           </div>
-
-                          {/* Admin Inline Discount Editor */}
-                          {isAdminOrSuper && activeCartDiscountIndex === index && (
-                            <div className="mt-1.5 p-1.5 bg-[var(--pos-bg-subtle)] border border-[var(--pos-border)] rounded flex items-center gap-1.5">
-                              <span className="text-[10px] text-[var(--pos-text-muted)]">Disc/unit:</span>
-                              <input
-                                type="number"
-                                min="0"
-                                max={item.unitPrice}
-                                value={item.unitDiscount}
-                                onChange={(e) =>
-                                  updateCartUnitDiscount(index, parseFloat(e.target.value) || 0)
-                                }
-                                className="w-16 px-1.5 py-0.5 border border-[var(--pos-border)] rounded font-mono text-xs bg-white"
-                              />
-                            </div>
-                          )}
                         </TableCell>
 
+                        {/* Read-Only Qty & Unit Display */}
                         <TableCell align="center">
-                          <div className="flex flex-col items-center gap-1">
-                            <QuantityControl
-                              value={item.quantity}
-                              min={(item.product.unit || '').toUpperCase() === 'KG' ? 0.001 : 1}
-                              max={item.product.quantity}
-                              step={(item.product.unit || '').toUpperCase() === 'KG' ? 0.25 : 1}
-                              unit={item.product.unit}
-                              onChange={(val) => updateCartQuantity(index, val)}
-                              size="sm"
-                            />
-                            <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded border ${
-                              (item.product.unit || '').toUpperCase() === 'KG'
-                                ? 'bg-amber-50 text-amber-900 border-amber-300'
-                                : 'bg-blue-50 text-blue-900 border-blue-300'
-                            }`}>
+                          <div className="flex flex-col items-center justify-center">
+                            <span className={`text-xs font-mono font-bold px-2.5 py-1 rounded border shadow-2xs ${(item.product.unit || '').toUpperCase() === 'KG'
+                              ? 'bg-amber-50 text-amber-900 border-amber-300'
+                              : 'bg-blue-50 text-blue-900 border-blue-300'
+                              }`}>
                               {(item.product.unit || '').toUpperCase() === 'KG'
                                 ? `${Number(item.quantity).toFixed(3)} kg`
                                 : `${Math.floor(item.quantity)} pcs`}
@@ -1664,32 +1707,25 @@ export default function POSPage() {
                           </div>
                         </TableCell>
 
-                        <TableCell align="right" monospace className="text-xs text-[var(--pos-text-muted)]">
-                          {item.unitPrice.toFixed(2)}
+                        {/* Read-Only Unit Price Display */}
+                        <TableCell align="right" monospace className="text-xs font-medium text-[var(--pos-text-muted)]">
+                          Rs. {item.unitPrice.toFixed(2)}
                         </TableCell>
 
+                        {/* Read-Only Amount Display */}
                         <TableCell align="right" monospace className="text-xs font-bold text-[var(--pos-text)]">
-                          {item.amount.toFixed(2)}
+                          Rs. {item.amount.toFixed(2)}
                         </TableCell>
 
-                        <TableCell align="center">
-                          {isAdminOrSuper ? (
-                            <button
-                              type="button"
-                              onClick={() => removeCartItem(index)}
-                              className="text-[var(--pos-text-muted)] hover:text-[var(--pos-danger)] font-bold text-sm cursor-pointer transition-colors"
-                              title="Remove item (Admin only)"
-                            >
-                              ✕
-                            </button>
-                          ) : (
-                            <span
-                              className="text-[11px] text-slate-300 select-none"
-                              title="Item deletion is restricted to Admin / Super Admin"
-                            >
-                              🔒
-                            </span>
-                          )}
+                        <TableCell align="center" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => removeCartItem(index)}
+                            className="text-[var(--pos-text-muted)] hover:text-[var(--pos-danger)] font-bold text-sm cursor-pointer transition-colors p-1"
+                            title="Remove item from bill"
+                          >
+                            ✕
+                          </button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -1700,6 +1736,16 @@ export default function POSPage() {
 
             {/* Bill Summary Breakdown */}
             <div className="p-3 bg-[var(--pos-bg-subtle)] border-t border-[var(--pos-border)] space-y-1 text-xs text-[var(--pos-text-muted)] shrink-0">
+              <div className="flex justify-between items-center">
+                <span>Billing Mode</span>
+                <span className={`font-mono font-bold text-[10px] px-2 py-0.5 rounded border uppercase ${
+                  isWholesaleApprovedForBill
+                    ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                    : 'bg-blue-100 text-blue-900 border-blue-300'
+                }`}>
+                  {isWholesaleApprovedForBill ? 'WHOLESALE' : 'RETAIL'}
+                </span>
+              </div>
               <div className="flex justify-between">
                 <span>Subtotal</span>
                 <PriceDisplay amount={subtotal} size="sm" />
@@ -1822,6 +1868,64 @@ export default function POSPage() {
           </div>
         </div>
       </div>
+
+      {/* Admin: edit catalog prices without changing the on-screen product layout */}
+      <Dialog
+        isOpen={isCatalogPriceModalOpen}
+        onClose={() => setIsCatalogPriceModalOpen(false)}
+        title="Update Catalog Price"
+        size="sm"
+      >
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--pos-text-muted)]">
+            {activeProduct?.item_name} ({activeProduct?.item_code})
+          </p>
+          <Input
+            label="Retail Price"
+            type="number"
+            min={0}
+            step={0.5}
+            value={catalogEditRetailPrice}
+            onChange={(e) => setCatalogEditRetailPrice(parseFloat(e.target.value) || 0)}
+            monospace
+          />
+          <Input
+            label="Retail Discount"
+            type="number"
+            min={0}
+            step={0.5}
+            value={catalogEditRetailDiscount}
+            onChange={(e) => setCatalogEditRetailDiscount(parseFloat(e.target.value) || 0)}
+            monospace
+          />
+          <Input
+            label="Wholesale Price"
+            type="number"
+            min={0}
+            step={0.01}
+            value={catalogEditWholesalePrice}
+            onChange={(e) => setCatalogEditWholesalePrice(Math.max(0, parseFloat(e.target.value) || 0))}
+            monospace
+          />
+          <div className="flex gap-2 pt-2">
+            <Button
+              variant="primary"
+              className="flex-1"
+              onClick={handleSaveMasterPrice}
+              disabled={isUpdatingMasterPrice}
+            >
+              {isUpdatingMasterPrice ? 'Saving...' : 'Save to Catalog'}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setIsCatalogPriceModalOpen(false)}
+              disabled={isUpdatingMasterPrice}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       {/* Held / Parked Sales Dialog */}
       <Dialog

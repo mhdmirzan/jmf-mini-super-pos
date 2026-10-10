@@ -32,8 +32,29 @@ class SettingsRepository {
 
   /**
    * Set a system setting. Creates if not exists, updates if exists.
+   * Store branding keys can only be changed by Admin / Super Admin.
    */
   set({ key, value, updatedBy }) {
+    const adminOnlyKeys = [
+      'SHOP_NAME',
+      'SHOP_ADDRESS',
+      'SHOP_PHONE',
+      'RECEIPT_FOOTER',
+      'INVOICE_PREFIX',
+      'RETURN_PREFIX',
+      'MAX_USERS',
+    ];
+
+    if (adminOnlyKeys.includes(key)) {
+      const actor = updatedBy
+        ? this.db.prepare('SELECT role FROM users WHERE id = ?').get(updatedBy)
+        : null;
+      const role = (actor?.role || '').toUpperCase().trim();
+      if (!['ADMIN', 'SUPER_ADMIN', 'SUPERADMIN'].includes(role)) {
+        return { success: false, error: 'Only Admin can change store settings.' };
+      }
+    }
+
     const existing = this.db.prepare(
       'SELECT * FROM system_settings WHERE setting_key = ?'
     ).get(key);

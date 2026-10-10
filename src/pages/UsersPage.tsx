@@ -21,10 +21,11 @@ import {
 
 export default function UsersPage() {
   const { user: currentUser } = useAuth();
-  const isSuperAdmin = (currentUser?.role || '').toUpperCase() === 'SUPER_ADMIN';
+  const roleUpper = (currentUser?.role || '').toUpperCase();
+  const isSuperAdmin = roleUpper === 'SUPER_ADMIN';
+  const isAdmin = roleUpper === 'ADMIN';
 
-  // Strict role guard: User accounts can NEVER be accessed through an Admin account
-  if (!isSuperAdmin) {
+  if (!isSuperAdmin && !isAdmin) {
     return <Navigate to="/pos" replace />;
   }
 
@@ -32,16 +33,15 @@ export default function UsersPage() {
   const [maxUsers, setMaxUsers] = useState<number>(5);
   const [loading, setLoading] = useState(false);
 
-  // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
 
-  // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [passwordUser, setPasswordUser] = useState<User | null>(null);
+  const [newPassword, setNewPassword] = useState('');
 
-  // Form states
   const [addForm, setAddForm] = useState({
     username: '',
     fullName: '',
@@ -62,17 +62,35 @@ export default function UsersPage() {
     type: 'success' | 'error' | 'warning' | 'info';
   } | null>(null);
 
+  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
+    setToast({ message, type });
+  };
+
+  const canChangePasswordFor = (u: User) => {
+    const targetRole = (u.role || '').toUpperCase();
+    if (isSuperAdmin) {
+      if (targetRole === 'SUPER_ADMIN') return u.id === currentUser?.id;
+      return targetRole === 'ADMIN' || targetRole === 'CASHIER';
+    }
+    if (isAdmin) return targetRole === 'CASHIER';
+    return false;
+  };
+
   const loadData = async () => {
     setLoading(true);
     try {
       const uRes = await userService.list(currentUser?.role);
       if (uRes.success && uRes.users) {
         setUsers(uRes.users);
+      } else if (uRes.error) {
+        showToast(uRes.error, 'error');
       }
 
-      const sRes = await settingsService.get('MAX_USERS');
-      if (sRes.success && sRes.setting) {
-        setMaxUsers(parseInt(sRes.setting.setting_value, 10) || 5);
+      if (isSuperAdmin) {
+        const sRes = await settingsService.get('MAX_USERS');
+        if (sRes.success && sRes.setting) {
+          setMaxUsers(parseInt(sRes.setting.setting_value, 10) || 5);
+        }
       }
     } catch (err: any) {
       showToast('Error loading users: ' + err.message, 'error');
@@ -85,16 +103,12 @@ export default function UsersPage() {
     loadData();
   }, []);
 
-  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
-    setToast({ message, type });
-  };
-
   const activeUsersCount = users.filter((u) => u.is_active === 1).length;
   const isLimitReached = activeUsersCount >= maxUsers;
 
-  // Add User
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isSuperAdmin) return;
     if (!addForm.username.trim() || !addForm.password || !addForm.fullName.trim()) {
       showToast('All fields are required', 'error');
       return;
@@ -107,17 +121,13 @@ export default function UsersPage() {
         fullName: addForm.fullName.trim(),
         role: addForm.role,
         createdBy: currentUser?.id,
+        requesterRole: currentUser?.role,
       });
 
       if (res.success) {
         showToast(`User ${addForm.username} created successfully`, 'success');
         setIsAddModalOpen(false);
-        setAddForm({
-          username: '',
-          fullName: '',
-          password: '',
-          role: 'CASHIER',
-        });
+        setAddForm({ username: '', fullName: '', password: '', role: 'CASHIER' });
         loadData();
       } else {
         showToast(res.error || 'Failed to create user', 'error');
@@ -127,8 +137,8 @@ export default function UsersPage() {
     }
   };
 
-  // Edit User
   const openEditModal = (u: User) => {
+    if (!isSuperAdmin) return;
     setEditingUser(u);
     setEditForm({
       username: u.username,
@@ -141,7 +151,12 @@ export default function UsersPage() {
 
   const handleEditUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingUser) return;
+    if (!editingUser || !isSuperAdmin) return;
+
+    if (editForm.newPassword.trim() && !canChangePasswordFor(editingUser)) {
+      showToast('You cannot change this user\'s password', 'error');
+      return;
+    }
 
     try {
       const res = await userService.update({
@@ -152,6 +167,7 @@ export default function UsersPage() {
         isActive: editForm.isActive,
         password: editForm.newPassword.trim() ? editForm.newPassword : undefined,
         updatedBy: currentUser?.id,
+        requesterRole: currentUser?.role,
       });
 
       if (res.success) {
@@ -166,8 +182,40 @@ export default function UsersPage() {
     }
   };
 
-  // Toggle active state
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!passwordUser) return;
+    if (!newPassword.trim()) {
+      showToast('Enter a new password', 'error');
+      return;
+    }
+    if (!canChangePasswordFor(passwordUser)) {
+      showToast('You cannot change this user\'s password', 'error');
+      return;
+    }
+
+    try {
+      const res = await userService.update({
+        id: passwordUser.id,
+        password: newPassword.trim(),
+        updatedBy: currentUser?.id,
+        requesterRole: currentUser?.role,
+      });
+
+      if (res.success) {
+        showToast(`Password updated for ${passwordUser.username}`, 'success');
+        setPasswordUser(null);
+        setNewPassword('');
+      } else {
+        showToast(res.error || 'Failed to change password', 'error');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Error changing password', 'error');
+    }
+  };
+
   const handleToggleActive = async (u: User) => {
+    if (!isSuperAdmin) return;
     const nextState = u.is_active === 1 ? 0 : 1;
     if (nextState === 1 && isLimitReached) {
       showToast(`Cannot activate user: MAX_USERS limit of ${maxUsers} reached`, 'error');
@@ -179,6 +227,7 @@ export default function UsersPage() {
         id: u.id,
         isActive: nextState,
         updatedBy: currentUser?.id,
+        requesterRole: currentUser?.role,
       });
       if (res.success) {
         showToast(`User ${u.username} ${nextState === 1 ? 'activated' : 'disabled'}`, 'success');
@@ -191,86 +240,93 @@ export default function UsersPage() {
     }
   };
 
-  // Filter users
   const filteredUsers = users.filter((u) => {
     const q = searchQuery.toLowerCase();
-    const nameMatch = (u.fullName || u.full_name || '').toLowerCase().includes(q) || u.username.toLowerCase().includes(q);
+    const nameMatch =
+      (u.fullName || u.full_name || '').toLowerCase().includes(q) ||
+      u.username.toLowerCase().includes(q);
     const roleMatch = roleFilter === 'ALL' || u.role === roleFilter;
-    const statusMatch = statusFilter === 'ALL' || (statusFilter === 'ACTIVE' ? u.is_active === 1 : u.is_active === 0);
+    const statusMatch =
+      statusFilter === 'ALL' ||
+      (statusFilter === 'ACTIVE' ? u.is_active === 1 : u.is_active === 0);
     return nameMatch && roleMatch && statusMatch;
   });
 
   return (
     <div className="p-4 h-full flex flex-col select-none gap-3 bg-[var(--pos-bg)]">
-      {/* Toast Alert */}
       {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
-        />
+        <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
       )}
 
-      {/* Header */}
       <PageHeader
-        title="Users"
-        subtitle="Cashier accounts and security credentials"
-        count={`${activeUsersCount} / ${maxUsers} users`}
+        title={isSuperAdmin ? 'Users' : 'Cashier Passwords'}
+        subtitle={
+          isSuperAdmin
+            ? 'Manage accounts. Super Admin can change own, Admin, and Cashier passwords.'
+            : 'Admin can change cashier passwords only.'
+        }
+        count={isSuperAdmin ? `${activeUsersCount} / ${maxUsers} users` : filteredUsers.length}
         actions={
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={isLimitReached}
-            onClick={() => {
-              if (isLimitReached) {
-                showToast(`Limit reached (${maxUsers}/${maxUsers}). Disable an existing account or increase MAX_USERS.`, 'error');
-                return;
-              }
-              setIsAddModalOpen(true);
-            }}
-          >
-            + Add User
-          </Button>
+          isSuperAdmin ? (
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={isLimitReached}
+              onClick={() => {
+                if (isLimitReached) {
+                  showToast(
+                    `Limit reached (${maxUsers}/${maxUsers}). Disable an existing account or increase MAX_USERS.`,
+                    'error'
+                  );
+                  return;
+                }
+                setIsAddModalOpen(true);
+              }}
+            >
+              + Add User
+            </Button>
+          ) : undefined
         }
       />
 
-      {/* Filters Bar */}
-      <div className="pos-card p-3 flex flex-wrap gap-2 items-center shrink-0">
+      <div className="flex flex-wrap gap-2 items-center shrink-0 py-1">
         <div className="flex-1 min-w-[200px]">
           <Input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search user by name or username..."
+            placeholder="Search by name or username..."
           />
         </div>
 
-        <div className="w-36">
-          <Select
-            value={roleFilter}
-            onChange={(e) => setRoleFilter(e.target.value)}
-            options={[
-              { value: 'ALL', label: 'All Roles' },
-              { value: 'CASHIER', label: 'Cashier' },
-              { value: 'ADMIN', label: 'Admin' },
-              { value: 'SUPER_ADMIN', label: 'Super Admin' },
-            ]}
-          />
-        </div>
-
-        <div className="w-36">
-          <Select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            options={[
-              { value: 'ALL', label: 'All Status' },
-              { value: 'ACTIVE', label: 'Active' },
-              { value: 'DISABLED', label: 'Disabled' },
-            ]}
-          />
-        </div>
+        {isSuperAdmin && (
+          <>
+            <div className="w-36">
+              <Select
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value)}
+                options={[
+                  { value: 'ALL', label: 'All Roles' },
+                  { value: 'CASHIER', label: 'Cashier' },
+                  { value: 'ADMIN', label: 'Admin' },
+                  { value: 'SUPER_ADMIN', label: 'Super Admin' },
+                ]}
+              />
+            </div>
+            <div className="w-36">
+              <Select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                options={[
+                  { value: 'ALL', label: 'All Status' },
+                  { value: 'ACTIVE', label: 'Active' },
+                  { value: 'DISABLED', label: 'Disabled' },
+                ]}
+              />
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Users Data Table */}
       <div className="pos-card flex-1 overflow-auto">
         <Table>
           <TableHeader>
@@ -286,7 +342,7 @@ export default function UsersPage() {
             {loading ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-12 text-center text-[var(--pos-text-muted)]">
-                  Loading user accounts...
+                  Loading…
                 </TableCell>
               </TableRow>
             ) : filteredUsers.length === 0 ? (
@@ -294,7 +350,11 @@ export default function UsersPage() {
                 <TableCell colSpan={5} className="py-12 text-center">
                   <EmptyState
                     title="No users found"
-                    description="No user accounts matched the filter criteria."
+                    description={
+                      isAdmin
+                        ? 'No cashier accounts are available.'
+                        : 'No user accounts matched the filter criteria.'
+                    }
                   />
                 </TableCell>
               </TableRow>
@@ -309,7 +369,11 @@ export default function UsersPage() {
                   </TableCell>
                   <TableCell className="text-xs">
                     <span className="font-medium text-[var(--pos-text)]">
-                      {u.role === 'SUPER_ADMIN' ? 'Super Admin' : u.role === 'ADMIN' ? 'Admin' : 'Cashier'}
+                      {u.role === 'SUPER_ADMIN'
+                        ? 'Super Admin'
+                        : u.role === 'ADMIN'
+                          ? 'Admin'
+                          : 'Cashier'}
                     </span>
                   </TableCell>
                   <TableCell align="center">
@@ -325,20 +389,30 @@ export default function UsersPage() {
                   </TableCell>
                   <TableCell align="right">
                     <div className="flex items-center justify-end gap-1.5">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => openEditModal(u)}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleToggleActive(u)}
-                      >
-                        {u.is_active === 1 ? 'Disable' : 'Enable'}
-                      </Button>
+                      {canChangePasswordFor(u) && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            setPasswordUser(u);
+                            setNewPassword('');
+                          }}
+                        >
+                          Change Password
+                        </Button>
+                      )}
+                      {isSuperAdmin && (
+                        <>
+                          <Button variant="secondary" size="sm" onClick={() => openEditModal(u)}>
+                            Edit
+                          </Button>
+                          {u.id !== currentUser?.id && (
+                            <Button variant="ghost" size="sm" onClick={() => handleToggleActive(u)}>
+                              {u.is_active === 1 ? 'Disable' : 'Enable'}
+                            </Button>
+                          )}
+                        </>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -348,14 +422,8 @@ export default function UsersPage() {
         </Table>
       </div>
 
-      {/* Add User Dialog */}
-      {isAddModalOpen && (
-        <Dialog
-          isOpen={true}
-          onClose={() => setIsAddModalOpen(false)}
-          title="Add New User"
-          size="sm"
-        >
+      {isAddModalOpen && isSuperAdmin && (
+        <Dialog isOpen={true} onClose={() => setIsAddModalOpen(false)} title="Add New User" size="sm">
           <form onSubmit={handleAddUser} className="space-y-3">
             <Input
               label="Full Name *"
@@ -363,14 +431,12 @@ export default function UsersPage() {
               autoFocus
               value={addForm.fullName}
               onChange={(e) => setAddForm({ ...addForm, fullName: e.target.value })}
-              placeholder="e.g., John Doe"
             />
             <Input
               label="Username *"
               required
               value={addForm.username}
               onChange={(e) => setAddForm({ ...addForm, username: e.target.value })}
-              placeholder="e.g., cashier01"
               monospace
             />
             <Input
@@ -385,17 +451,13 @@ export default function UsersPage() {
               value={addForm.role}
               onChange={(e) => setAddForm({ ...addForm, role: e.target.value as UserRole })}
               options={[
-                { value: 'CASHIER', label: 'Cashier (POS Checkout only)' },
-                { value: 'ADMIN', label: 'Admin (Stock & Invoices)' },
-                { value: 'SUPER_ADMIN', label: 'Super Admin (Full Access)' },
+                { value: 'CASHIER', label: 'Cashier' },
+                { value: 'ADMIN', label: 'Admin' },
+                { value: 'SUPER_ADMIN', label: 'Super Admin' },
               ]}
             />
             <div className="pt-3 border-t border-[var(--pos-border)] flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setIsAddModalOpen(false)}
-              >
+              <Button type="button" variant="secondary" onClick={() => setIsAddModalOpen(false)}>
                 Cancel
               </Button>
               <Button type="submit" variant="primary">
@@ -406,8 +468,7 @@ export default function UsersPage() {
         </Dialog>
       )}
 
-      {/* Edit User Dialog */}
-      {editingUser && (
+      {editingUser && isSuperAdmin && (
         <Dialog
           isOpen={true}
           onClose={() => setEditingUser(null)}
@@ -428,13 +489,15 @@ export default function UsersPage() {
               onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
               monospace
             />
-            <Input
-              label="New Password (optional)"
-              type="password"
-              value={editForm.newPassword}
-              onChange={(e) => setEditForm({ ...editForm, newPassword: e.target.value })}
-              placeholder="Leave blank to retain current password"
-            />
+            {canChangePasswordFor(editingUser) && (
+              <Input
+                label="New Password (optional)"
+                type="password"
+                value={editForm.newPassword}
+                onChange={(e) => setEditForm({ ...editForm, newPassword: e.target.value })}
+                placeholder="Leave blank to keep current password"
+              />
+            )}
             <Select
               label="Role *"
               value={editForm.role}
@@ -455,15 +518,49 @@ export default function UsersPage() {
               ]}
             />
             <div className="pt-3 border-t border-[var(--pos-border)] flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setEditingUser(null)}
-              >
+              <Button type="button" variant="secondary" onClick={() => setEditingUser(null)}>
                 Cancel
               </Button>
               <Button type="submit" variant="primary">
                 Save Changes
+              </Button>
+            </div>
+          </form>
+        </Dialog>
+      )}
+
+      {passwordUser && (
+        <Dialog
+          isOpen={true}
+          onClose={() => {
+            setPasswordUser(null);
+            setNewPassword('');
+          }}
+          title={`Change Password: ${passwordUser.username}`}
+          size="sm"
+        >
+          <form onSubmit={handleChangePassword} className="space-y-3">
+            <Input
+              label="New Password *"
+              type="password"
+              required
+              autoFocus
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+            />
+            <div className="pt-3 border-t border-[var(--pos-border)] flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setPasswordUser(null);
+                  setNewPassword('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary">
+                Update Password
               </Button>
             </div>
           </form>

@@ -21,13 +21,37 @@ export default function ReceiptModal({
   salesReturn,
   shopSettings,
 }: ReceiptModalProps) {
+  const [isPrinting, setIsPrinting] = React.useState(false);
+  const [printError, setPrintError] = React.useState('');
+
   if (!isOpen || (!invoice && !salesReturn)) return null;
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
+    setPrintError('');
+    const receiptEl = document.getElementById('printable-receipt');
+    const receiptHtml = receiptEl ? receiptEl.innerHTML : '';
+
+    if (window.electronAPI?.invoke) {
+      setIsPrinting(true);
+      try {
+        const result = await window.electronAPI.invoke('printer:printReceipt', { html: receiptHtml });
+        if (!result?.success) {
+          setPrintError(result?.error || 'Printer is not ready');
+          window.print();
+        }
+      } catch (err: any) {
+        setPrintError(err?.message || 'Print failed');
+        window.print();
+      } finally {
+        setIsPrinting(false);
+      }
+      return;
+    }
+
     window.print();
   };
 
-  const shopName = shopSettings?.shopName || 'MINI SUPERMARKET';
+  const shopName = shopSettings?.shopName || 'STORE NAME';
   const shopAddress = shopSettings?.shopAddress || '';
   const shopPhone = shopSettings?.shopPhone || '';
   const receiptFooter =
@@ -79,6 +103,14 @@ export default function ReceiptModal({
                   <span>Cashier:</span>
                   <span>{invoice.cashier_name || invoice.cashier_username || invoice.cashier_id}</span>
                 </div>
+                <div className="flex justify-between">
+                  <span>Rate Type:</span>
+                  <span className="font-bold">
+                    {invoice.price_type === 'WHOLESALE' || invoice.items?.some((i) => i.price_type === 'WHOLESALE')
+                      ? 'WHOLESALE'
+                      : 'RETAIL'}
+                  </span>
+                </div>
                 {invoice.status === 'CANCELLED' && (
                   <div className="text-center text-rose-600 font-bold border border-rose-600 p-1 my-1">
                     *** CANCELLED ***
@@ -123,7 +155,12 @@ export default function ReceiptModal({
               <div className="space-y-1">
                 {invoice.items.map((item, idx) => (
                   <div key={idx} className="text-[11px]">
-                    <div className="font-medium truncate">{item.item_name}</div>
+                    <div className="flex items-center justify-between font-medium">
+                      <span className="truncate max-w-[180px]">{item.item_name}</span>
+                      <span className="text-[9px] font-mono font-bold px-1 rounded border border-black/20 text-slate-700">
+                        {item.price_type === 'WHOLESALE' ? 'W' : 'R'}
+                      </span>
+                    </div>
                     <div className="flex justify-between text-slate-600 text-[10px]">
                       <span className="w-1/2 text-slate-400 pl-1">#{item.item_code}</span>
                       <span className="w-1/6 text-right">
@@ -232,17 +269,21 @@ export default function ReceiptModal({
           {/* Footer */}
           <div className="text-center text-[10px] text-slate-600 space-y-1">
             <div>{receiptFooter}</div>
-            <div className="text-[9px] text-slate-400">POS Offline-First System</div>
+            <div className="text-[9px] text-slate-400">Powered by Buyra</div>
           </div>
         </div>
 
         {/* Modal Footer */}
         <div className="p-3 px-4 border-t border-[var(--pos-border)] flex justify-end gap-2 bg-[var(--pos-bg-subtle)] print:hidden">
+          {printError && (
+            <span className="mr-auto text-[11px] text-rose-600 self-center">{printError}</span>
+          )}
           <button
             onClick={handlePrint}
+            disabled={isPrinting}
             className="pos-btn pos-btn-primary pos-btn-sm"
           >
-            Print Receipt
+            {isPrinting ? 'Printing...' : 'Print Receipt'}
           </button>
           <button
             onClick={onClose}
